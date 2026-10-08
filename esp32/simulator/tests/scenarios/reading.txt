@@ -1,0 +1,8 @@
+# Muted replies use a larger text page within the circular bezel.
+face=speaking
+paired=true
+speaker=false
+progress=0.8
+caption=Here is your answer. All of this text should remain inside the round display, with space for the status icons above and the page indicator below.
+reply=Here is your answer. All of this text should remain inside the round display, with space for the status icons above and the page indicator below.
+advance=1200

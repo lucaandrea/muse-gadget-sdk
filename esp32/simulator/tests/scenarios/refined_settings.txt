@@ -1,0 +1,4 @@
+face=idle
+advance=400
+view=settings
+advance=400

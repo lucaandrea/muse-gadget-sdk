@@ -42,13 +42,21 @@ if(CONFIG_MUSE_ENABLED)
         "muse_lv_mem.c"
         "muse_link.c"
         "muse_ble.c")
+    list(APPEND srcs "muse_theme.c")
+    if(CONFIG_MUSE_REFINED_UI)
+        list(APPEND srcs "muse_refined_ui.c" "muse_character.c" "muse_character_data.c"
+             "muse_reply.c" "muse_reading.c" "muse_presentation.c")
+    endif()
     if(CONFIG_MUSE_HATCH)
-        list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp")
+        list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp" "muse_tts.cpp")
         list(APPEND embed "test_reply.mp3")   # muse_hatch_mp3_selftest
     else()
         list(APPEND srcs "muse_chat_link.c")   # text replies over Link's session
     endif()
     list(APPEND srcs "muse_chat_text.c")
+    if(CONFIG_MUSE_POCKET)
+        list(APPEND srcs "muse_pocket.c" "muse_cards.c")
+    endif()
     if(CONFIG_MUSE_CJK_FONT)
         list(APPEND srcs "fonts/muse_font_cjk_16.c")   # captions' CJK fallback
     endif()
@@ -117,6 +125,7 @@ set(muse_priv_requires
     esp_lcd esp_adc esp_driver_i2s esp_driver_ledc esp_driver_spi esp_driver_uart esp_wifi
     esp_driver_pcnt)
 list(APPEND muse_priv_requires camera)
+list(APPEND muse_priv_requires esp_websocket_client spiffs)
 
 idf_component_register(
     SRCS ${srcs}

@@ -25,6 +25,12 @@
 
 #include "muse_state.h"
 #include "muse_text.h"
+#ifdef ESP_PLATFORM
+#include "sdkconfig.h"
+#endif
+#if CONFIG_MUSE_REFINED_UI
+#include "muse_reply.h"
+#endif
 
 #define CAPTION_CHARS 32   /* what fits across the round screen */
 #define CONSOLE_LINE 400   /* one "@chat" line */
@@ -152,6 +158,9 @@ static bool next_line(const char **text, int cols, const char **start, size_t *l
  */
 bool muse_hatch_caption_at(const char *text, size_t at, char *out, size_t cap)
 {
+#if defined(CONFIG_MUSE_REFINED_UI) && CONFIG_MUSE_REFINED_UI
+    muse_reply_publish(text, at);
+#endif
     int cols, lines;
     muse_state_page(muse_text_has_cjk(text), &cols, &lines);
     const char *p = text, *start;

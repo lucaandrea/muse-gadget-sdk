@@ -23,4 +23,8 @@ muse-simulator.ppm
 
 # Local gadget provisioning and original-device flash backups.
 .sdk-token
+.env
+.env.*
 /backups/
+/build-muse-*/
+.env

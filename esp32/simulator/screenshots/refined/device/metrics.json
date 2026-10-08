@@ -1,0 +1,68 @@
+{
+  "idle": {
+    "refreshes": 111,
+    "refresh_avg_us": 2294,
+    "refresh_max_us": 10046,
+    "refresh_over_budget": 0,
+    "updates": 109,
+    "update_avg_us": 736,
+    "update_max_us": 9588,
+    "internal_free": 32299,
+    "psram_free": 2549128
+  },
+  "thinking": {
+    "refreshes": 155,
+    "refresh_avg_us": 2890,
+    "refresh_max_us": 5460,
+    "refresh_over_budget": 0,
+    "updates": 110,
+    "update_avg_us": 913,
+    "update_max_us": 1132,
+    "internal_free": 32299,
+    "psram_free": 2548992
+  },
+  "quiet": {
+    "refreshes": 148,
+    "refresh_avg_us": 8453,
+    "refresh_max_us": 19525,
+    "refresh_over_budget": 0,
+    "updates": 109,
+    "update_avg_us": 2518,
+    "update_max_us": 3628,
+    "internal_free": 32299,
+    "psram_free": 2548992
+  },
+  "settings": {
+    "refreshes": 0,
+    "refresh_avg_us": 0,
+    "refresh_max_us": 0,
+    "refresh_over_budget": 0,
+    "updates": 0,
+    "update_avg_us": 0,
+    "update_max_us": 0,
+    "internal_free": 32299,
+    "psram_free": 2548992
+  },
+  "sleep": {
+    "refreshes": 0,
+    "refresh_avg_us": 0,
+    "refresh_max_us": 0,
+    "refresh_over_budget": 0,
+    "updates": 0,
+    "update_avg_us": 0,
+    "update_max_us": 0,
+    "internal_free": 32299,
+    "psram_free": 2548980
+  },
+  "speech": {
+    "refreshes": 309,
+    "refresh_avg_us": 2783,
+    "refresh_max_us": 41277,
+    "refresh_over_budget": 1,
+    "updates": 298,
+    "update_avg_us": 964,
+    "update_max_us": 12652,
+    "internal_free": 30959,
+    "psram_free": 2499124
+  }
+}

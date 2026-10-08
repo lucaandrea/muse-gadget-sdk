@@ -103,6 +103,15 @@ Run this from a terminal in a logged-in Linux or macOS desktop session:
 ./esp32/simulator/build/muse_simulator
 ```
 
+For the round Waveshare ESP32-S3-Touch-AMOLED-1.75C, use
+`--board waveshare-s3-175c`. This previews its native 466 x 466 resolution
+and top/bottom button hints. The default `--board watcher` remains 412 x 412.
+Both sizes run through the headless screenshot tests.
+
+Scenarios also accept `touch=X,Y,down|up|move` and `expect_speaker=true|false`.
+Advance the clock between pointer events with `advance=80`. The tests exercise
+quick taps, long holds, and dragging away from the 1.75C's touch-only speaker.
+
 Mouse input acts as touch. The keyboard controls the common UI states:
 
 | Key | Action |
@@ -129,7 +138,7 @@ For a quick manual smoke test:
 4. Press F5 for speaking mode and use `+` and `-` to animate the mouth.
 5. Press H and confirm that the avatar performs the happy animation.
 6. Press S to sleep, then click the dark window to wake it.
-7. Drag left across the window to open the settings placeholder and drag right
+7. Drag left across the window to open the real settings UI and drag right
    to return to the avatar. Settings controls are not implemented in the simulator.
 8. Press P and confirm that `muse-simulator.ppm` appears in the current
    directory, then press Esc to quit.
@@ -186,6 +195,12 @@ Supported scenario keys are:
 - `link`: `boot`, `unpaired`, `pairing`, `confirm`, `connecting`, `online`,
   `offline`, or `error`
 - `speaker`, `brightness`, and `advance` in milliseconds
+- `reply`: full reply text for the refined reader, independent of the short status caption
+- `view`: `face`, `companion`, `quiet`, `reading`, `settings`, `display`, `sound`, `wifi`, `muse`, `bluetooth`, `sleep`, or `battery`
+- `character` and `reduced_motion`: saved-display-setting stand-ins, independent of `speaker`
+- `expect_ui_answer`, `expect_ui_reading`, `expect_ui_manual`, and `expect_ui_page`:
+  integer assertions against the actual presentation state (pages start at zero)
+- `expect_character` and `expect_reduced_motion`: boolean preference assertions
 
 Invalid options and scenario values return a nonzero exit status and identify
 the bad line.

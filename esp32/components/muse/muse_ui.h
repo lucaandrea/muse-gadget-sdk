@@ -52,3 +52,7 @@ void muse_ui_camera_hint(bool visible);
 
 /* Bench testing, from any task: streams the screen over USB serial. */
 void muse_ui_request_snapshot(void);
+/* Bench builds only; from any task, open a page for a device screenshot. */
+bool muse_ui_preview_page(const char *name);
+/* Bench-only render/heap measurements; reports and resets the sample window. */
+void muse_ui_report_metrics(void);

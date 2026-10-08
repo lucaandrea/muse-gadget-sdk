@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "muse-companion"
+version = "0.1.0"
+description = "Private voice, memory, reminders and tools for Muse pocket devices"
+requires-python = ">=3.12"
+dependencies = ["fastapi>=0.115,<1", "uvicorn>=0.34,<1", "httpx>=0.28,<1", "websockets>=15,<17", "python-multipart>=0.0.20", "pillow>=11,<13"]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-asyncio>=0.25"]
+
+[project.scripts]
+muse-companion = "muse_companion.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+muse_companion = ["static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+

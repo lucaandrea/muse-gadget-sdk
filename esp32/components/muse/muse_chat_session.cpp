@@ -26,8 +26,8 @@
  *   2. POST /chat/stream with the transcript. The reply arrives as events on
  *      the connection's long-lived POST /chat/subscribe stream: one or more
  *      assistant messages, each delta.message_start / text_append / message_done.
- *   3. Each finished message is shown at reading pace (see start_tts to
- *      speak it with a TTS API of your own; Muse doesn't speak gadget replies).
+ *   3. Each finished message is spoken through OpenAI TTS, with captions.
+ *      Muted or unconfigured devices show it at reading pace instead.
  * A turn has no explicit end event; like Sidekick, it settles once every
  * message is done and nothing has arrived for a few seconds.
  *
@@ -72,6 +72,8 @@ extern "C" {
 #include "muse_wifi.h"
 }
 #include "muse_chat_priv.h"
+#include "muse_reply.h"
+#include "muse_tts.h"
 
 #include <xplat/noise/core/ClientSession.h>
 #include <xplat/noise/core/PsaCryptoBackend.h>
@@ -98,7 +100,7 @@ static const char *TAG = "muse_chat_session";
 #define IN_BYTES (MIC_RATE * 2 * 8)        /* 8 s of mic backlog while connecting */
 #define OUT_BYTES (MIC_RATE * 2 * 2)       /* 2 s of decoded reply */
 #define EV_TEXT 72
-#define TEXT_MAX 1024                      /* a message's text, for captions timed to its speech */
+#define TEXT_MAX (16 * 1024)               /* bounded PSRAM text for captions and speech */
 #define SPEECH_CHARS_PER_S 14              /* until the speech's length is known */
 #define TEXT_CHARS_PER_S 16                /* speaker off: reading pace, a little over speech */
 #define TEXT_HOLD_S 2                      /* speaker off: how long a message's last lines stay up */
@@ -129,7 +131,7 @@ static const char *TAG = "muse_chat_session";
 
 /* ---- Voice task <-> session task ---- */
 
-enum cmd_type_t : uint8_t { CMD_CONNECT, CMD_FORGET, CMD_BEGIN, CMD_END, CMD_CANCEL, CMD_TEXT, CMD_TEXT_CANCEL, CMD_WAKE };
+enum cmd_type_t : uint8_t { CMD_CONNECT, CMD_FORGET, CMD_BEGIN, CMD_END, CMD_CANCEL, CMD_TEXT, CMD_TEXT_CANCEL, CMD_WAKE, CMD_SPEECH_TEST };
 
 struct cmd_t {
     cmd_type_t type;
@@ -237,6 +239,7 @@ struct turn_t {
     /* TTS */
     int tts_msg;             /* message being fetched (or shown, speaker off), or -1 */
     bool silent;             /* speaker off: tts_msg is paced by silence, not fetched */
+    uint32_t speech_job;      /* OpenAI worker job; 0 for silence / legacy MP3 */
     uint8_t *mp3;            /* MP3_BUF */
     size_t mp3_len;
     bool mp3_ended;
@@ -953,6 +956,8 @@ static void turn_reset_streams(void)
 
 static void turn_finish(void)
 {
+    muse_tts_cancel();
+    s_turn.speech_job = 0;
     turn_reset_streams();
     s_turn.phase = P_IDLE;
     s_turn.dict_id = s_turn.chat_id = 0;
@@ -1511,27 +1516,22 @@ static void start_tts(void)
         if (m.tts != TTS_QUEUED) {
             continue;
         }
-        /*
-         * Replies are text, shown at reading pace: silence in place of speech
-         * paces the captions and ends the turn. To speak them instead, send
-         * the message's text (s_turn.texts + i * TEXT_MAX, if texts was
-         * allocated; up to TEXT_MAX - 1 bytes) to a TTS API of your choice and
-         * play the MP3 it returns. In place of the silence below: keep
-         * m.tts = TTS_ACTIVE and s_turn.tts_msg = i, set s_turn.silent = false,
-         * m.pcm_start = s_turn.pcm_out, m.pcm_frames = 0, s_turn.mp3_len = 0,
-         * s_turn.mp3_ended = false, s_turn.kbps = 0, s_turn.down_rate = 0 and
-         * mp3dec_init(&s_turn.dec). Then, on this task, pass the MP3 to
-         * tts_data() as it arrives (it buffers up to MP3_BUF and drops the
-         * rest, so hold off while it's full) and set s_turn.mp3_ended at the
-         * end. decode() plays it at the speaker's volume, captions following,
-         * and finishes the message once it's drained.
-         */
         m.pcm_start = s_turn.pcm_out;
-        m.pcm_frames = (uint32_t)(m.len * MIC_RATE / TEXT_CHARS_PER_S);
         m.tts = TTS_ACTIVE;
         s_turn.tts_msg = i;
-        s_turn.silent = true;
-        ESP_LOGI(TAG, "showing message %s (%u chars)", m.id, (unsigned)m.len);
+        if (muse_settings_speaker_on() && s_turn.texts) {
+            s_turn.speech_job = muse_tts_begin(s_turn.texts + i * TEXT_MAX);
+            if (!s_turn.speech_job) {
+                emit(MUSE_HATCH_EV_SPEECH_ERROR, "VOICE NOT CONFIGURED");
+            }
+        }
+        s_turn.silent = !s_turn.speech_job;
+        m.pcm_frames = s_turn.silent ? (uint32_t)(m.len * MIC_RATE / TEXT_CHARS_PER_S) : 0;
+        if (!s_turn.silent) {
+            resampler_init(&s_turn.down, MUSE_TTS_RATE, MIC_RATE);
+            mark(M_TTS);
+        }
+        ESP_LOGI(TAG, "%s message %s (%u bytes)", s_turn.silent ? "showing" : "speaking", m.id, (unsigned)m.len);
         show_reply_start(m);
         return;
     }
@@ -1589,6 +1589,40 @@ static void decode(void)
     }
     if (s_turn.silent) {
         pace_silently();
+        return;
+    }
+    if (s_turn.speech_job) {
+        /* The consumer controls backpressure. A full playback buffer leaves
+         * PCM on the worker queue, which in turn slows the HTTPS download. */
+        while (xStreamBufferSpacesAvailable(s_out) >= (MUSE_TTS_FRAMES + 2) * sizeof(int16_t)) {
+            int frames = muse_tts_read(s_turn.speech_job, s_pcm);
+            if (frames == 0) {
+                return;
+            }
+            if (frames < 0) {
+                msg_t &m = s_turn.msgs[s_turn.tts_msg];
+                s_turn.speech_job = 0;
+                if (frames == -2) {
+                    emit(MUSE_HATCH_EV_SPEECH_ERROR, "VOICE UNAVAILABLE");
+                    ESP_LOGW(TAG, "speech failed; keeping the reply readable");
+                    s_turn.silent = true;
+                    m.pcm_frames = s_turn.pcm_out - m.pcm_start + (uint32_t)(m.len * MIC_RATE / TEXT_CHARS_PER_S);
+                } else {
+                    m.pcm_frames = s_turn.pcm_out - m.pcm_start;
+                    m.tts = TTS_FINISHED;
+                    s_turn.tts_msg = -1;
+                }
+                return;
+            }
+            size_t n = resample(&s_turn.down, s_pcm, frames, s_pcm16);
+            if (s_turn.gen != s_gen.load()) {
+                muse_tts_cancel();
+                return;
+            }
+            mark(M_AUDIO);
+            xStreamBufferSend(s_out, s_pcm16, n * sizeof(int16_t), 0);
+            s_turn.pcm_out += n;
+        }
         return;
     }
     /*
@@ -1935,6 +1969,15 @@ static void handle(const cmd_t &cmd)
         break;
     case CMD_WAKE:   /* only ends hatch_task's resting wait */
         break;
+    case CMD_SPEECH_TEST:
+        if (cmd.gen == s_gen.load() && turn_start(cmd.gen, false)) {
+            s_turn.phase = P_WAIT_REPLY;
+            s_turn.chat_us = s_turn.last_event_us = now_us();
+            s_turn.nmsgs = 1;
+            strlcpy(s_turn.msgs[0].id, "speaker-test", sizeof(s_turn.msgs[0].id));
+            message_done(0, "Hello! My speaker is ready. This is my AI generated voice. Tap the speaker icon to mute or unmute me.");
+        }
+        break;
     }
 }
 
@@ -2087,10 +2130,23 @@ extern "C" bool muse_hatch_ready(void)
 
 extern "C" void muse_hatch_turn_begin(void)
 {
+#if CONFIG_MUSE_REFINED_UI
+    muse_reply_new_turn();
+#endif
     uint32_t gen = ++s_gen;
     xStreamBufferReset(s_in);
     drain_out();
     post(CMD_BEGIN, gen);
+}
+
+extern "C" void muse_hatch_speech_test(void)
+{
+#if CONFIG_MUSE_REFINED_UI
+    muse_reply_new_turn();
+#endif
+    uint32_t gen = ++s_gen;
+    drain_out();
+    post(CMD_SPEECH_TEST, gen);
 }
 
 extern "C" void muse_hatch_turn_audio(const int16_t *pcm, size_t frames)

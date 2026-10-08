@@ -822,6 +822,10 @@ bool muse_hatch_ready(void)
 
 void muse_hatch_turn_begin(void)
 {
+#if CONFIG_MUSE_REFINED_UI
+    extern void muse_reply_new_turn(void);
+    muse_reply_new_turn();
+#endif
     end_turn();
     xQueueReset(s_events);
     memset(&s_turn, 0, sizeof(s_turn));

@@ -33,3 +33,8 @@ void muse_settings_ui_tick(bool visible);
 
 /* True when a sub-page is open (the tileview must not steal horizontal swipes). */
 bool muse_settings_ui_in_subpage(void);
+
+#if LV_USE_SNAPSHOT
+/* Bench screenshots: open a page under the display lock. */
+bool muse_settings_ui_preview_page(const char *name);
+#endif

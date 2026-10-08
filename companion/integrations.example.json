@@ -1,0 +1,29 @@
+{
+  "create_task": {
+    "kind": "http",
+    "description": "Create a task through my authenticated app bridge",
+    "url": "https://YOUR-BRIDGE.example/tasks",
+    "method": "POST",
+    "token_env": "MUSE_APP_BRIDGE_TOKEN",
+    "fields": ["title", "project"],
+    "read_only": false
+  },
+  "work_scene": {
+    "kind": "http",
+    "description": "Activate my configured work lighting scene",
+    "url": "https://YOUR-HOME-BRIDGE.example/scenes/work",
+    "method": "POST",
+    "token_env": "MUSE_HOME_BRIDGE_TOKEN",
+    "fields": [],
+    "read_only": false
+  },
+  "run_project_tests": {
+    "kind": "process",
+    "description": "Run tests in my explicitly connected project",
+    "argv": ["/ABSOLUTE/PATH/TO/python", "-m", "unittest", "discover", "-s", "tests"],
+    "cwd": "/ABSOLUTE/PATH/TO/PROJECT",
+    "fields": [],
+    "timeout": 120,
+    "read_only": false
+  }
+}

@@ -1,0 +1,8 @@
+face=listening
+advance=120
+face=thinking
+reply=Take it one step at a time. Your answer stays here after Muse finishes speaking. Tap this card to read at your own pace.
+advance=500
+face=idle
+caption=
+advance=800

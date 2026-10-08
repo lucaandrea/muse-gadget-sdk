@@ -1,0 +1,8 @@
+# First boot before phone pairing: device identity and circular-safe guidance.
+face=idle
+paired=false
+ble=advertising
+wifi=no_network
+link=unpaired
+caption=
+advance=1200

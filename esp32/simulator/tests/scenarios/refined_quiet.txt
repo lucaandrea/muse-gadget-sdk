@@ -1,0 +1,3 @@
+face=thinking
+character=false
+advance=800

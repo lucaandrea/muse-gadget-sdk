@@ -15,6 +15,10 @@
  */
 
 #include "muse_state.h"
+#include "sdkconfig.h"
+#if CONFIG_MUSE_REFINED_UI
+#include "muse_reply.h"
+#endif
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -76,6 +80,11 @@ void muse_state_set_mode(muse_mode_t mode)
     if (s_mode == MUSE_MODE_OFF && mode != MUSE_MODE_IDLE) {
         return;
     }
+#if CONFIG_MUSE_REFINED_UI
+    if (mode == MUSE_MODE_LISTENING) {
+        muse_reply_new_turn();
+    }
+#endif
     s_mode_since_us = esp_timer_get_time();
     s_mode = mode;
 }

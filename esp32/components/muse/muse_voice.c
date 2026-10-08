@@ -15,6 +15,9 @@
  */
 
 #include "muse_voice.h"
+#if CONFIG_MUSE_POCKET
+#include "muse_pocket.h"
+#endif
 
 #include <math.h>
 #include <stdio.h>
@@ -73,6 +76,7 @@ static volatile float s_monitor_db = -100.0f;
 static volatile bool s_chirp;
 static volatile bool s_loopback;
 static volatile bool s_mp3test;
+static volatile bool s_speechtest;
 
 /*
  * Pre-roll: while idle the mic keeps running into this ring, so a recording
@@ -353,6 +357,8 @@ static bool hatch_reply(bool *delivered)
     char text[96];
     static char page[MUSE_CAPTION_MAX];
     bool done = false, speaking = false, replied = false;
+    bool speech_failed = false;
+    float peak_level = 0;
     size_t played = 0;
     int64_t t0 = esp_timer_get_time();
     *delivered = false;
@@ -387,6 +393,10 @@ static bool hatch_reply(bool *delivered)
                 muse_state_set_level(0);
                 go_idle(text);
                 return false;
+            case MUSE_HATCH_EV_SPEECH_ERROR:
+                speech_failed = true;
+                ESP_LOGW(TAG, "speech: %s", text);
+                break;
             default:
                 break;
             }
@@ -404,8 +414,18 @@ static bool hatch_reply(bool *delivered)
                 muse_state_set_mode(MUSE_MODE_SPEAKING);
                 ESP_LOGI(TAG, "reply audio after %.2fs", (esp_timer_get_time() - t0) / 1e6);
             }
-            muse_state_set_level(muse_audio_level(buf, n));
-            muse_audio_write(buf, n);
+            float level = muse_audio_level(buf, n);
+            if (level > peak_level) {
+                peak_level = level;
+            }
+            muse_state_set_level(level);
+            if (muse_audio_write(buf, n) != ESP_OK) {
+                muse_hatch_turn_cancel();
+                muse_state_set_level(0);
+                go_idle("SPEAKER PLAYBACK FAILED");
+                ESP_LOGE(TAG, "reply speaker write failed");
+                return false;
+            }
             played += n;
         } else if (done) {
             break;
@@ -420,11 +440,14 @@ static bool hatch_reply(bool *delivered)
         }
     }
     muse_state_set_level(0);
-    ESP_LOGI(TAG, "muse reply: %.2fs of audio, %.2fs total", (double)played / MUSE_AUDIO_RATE,
-             (esp_timer_get_time() - t0) / 1e6);
+    ESP_LOGI(TAG, "muse reply: %.2fs of audio, %.2fs total, peak level %.3f", (double)played / MUSE_AUDIO_RATE,
+             (esp_timer_get_time() - t0) / 1e6, (double)peak_level);
     if (!played) {
         /* No speech (TTS unavailable): leave the reply text up for a moment. */
         vTaskDelay(pdMS_TO_TICKS(2500));
+    }
+    if (speech_failed) {
+        go_idle("VOICE UNAVAILABLE - SEE SOUND");
     }
     return false;
 }
@@ -792,11 +815,22 @@ static void voice_task(void *arg)
     muse_audio_selftest();
     for (;;) {
         bool wake = false;
+#if CONFIG_MUSE_POCKET
+        if (muse_pocket_enabled() && muse_pocket_audio_pending() && !pending_down) {
+            set_resting(false);
+            muse_input_event_t press;
+            if (xQueueReceive(s_queue, &press, 0) && press.type == MUSE_PTT_DOWN) pending_down = true;
+            else { muse_pocket_play_chunk(); continue; }
+        }
+#endif
         if (!pending_down) {
             muse_input_event_t ev;
             bool asleep = muse_state_asleep();
             bool battery = muse_state_on_battery();
-            bool rest = asleep && battery && !s_chirp && !s_mp3test && !s_loopback;
+            bool rest = asleep && battery && !s_chirp && !s_mp3test && !s_loopback && !s_speechtest;
+#if CONFIG_MUSE_POCKET
+            if (muse_pocket_enabled() && muse_pocket_busy()) rest = false;
+#endif
 #if HOLD_NOTES
             /* A press goes first: send_held() leaves it queued and returns
              * without backing off, so retrying before it's read would spin. */
@@ -843,6 +877,20 @@ static void voice_task(void *arg)
                 muse_audio_loopback_test(muse_settings_volume());
                 pre_reset();
             }
+#if CONFIG_MUSE_HATCH
+            if (s_speechtest) {
+                s_speechtest = false;
+                muse_wifi_power(MUSE_WIFI_FULL);
+                muse_hatch_speech_test();
+                bool delivered;
+                pending_down = hatch_reply(&delivered);
+                pre_reset();
+                if (!pending_down && muse_state_mode(NULL) != MUSE_MODE_IDLE) {
+                    go_idle("SPEAKER TEST COMPLETE");
+                }
+                continue;
+            }
+#endif
             /* The 20 ms read paces this loop. */
             idle_capture();
             if (xQueueReceive(s_queue, &ev, 0) != pdTRUE) {
@@ -858,6 +906,14 @@ static void voice_task(void *arg)
             continue;   /* a tap: it only woke Muse */
         }
         muse_wifi_power(MUSE_WIFI_FULL);
+#if CONFIG_MUSE_POCKET
+        if (muse_pocket_enabled()) {
+            muse_pocket_record(s_queue);
+            pending_down = false;
+            pre_reset();
+            continue;
+        }
+#endif
         if (!can_record()) {
             pending_down = false;
             continue;
@@ -931,6 +987,18 @@ void muse_voice_request_mp3test(void)
 {
     s_mp3test = true;
     muse_state_nudge();
+}
+
+void muse_voice_request_speechtest(void)
+{
+#if CONFIG_MUSE_POCKET
+    if (muse_pocket_enabled()) { muse_pocket_speech_test(); return; }
+#endif
+#if CONFIG_MUSE_HATCH
+    s_speechtest = true;
+    muse_state_poke();
+    muse_state_nudge();
+#endif
 }
 
 bool muse_voice_resting(void)

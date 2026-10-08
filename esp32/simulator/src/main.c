@@ -32,6 +32,7 @@
 #include "src/drivers/sdl/lv_sdl_window.h"
 
 #include "muse_state.h"
+#include "muse_settings.h"
 #include "muse_ui.h"
 #include "sim_board.h"
 #include "sim_platform.h"
@@ -57,7 +58,7 @@ static void usage(FILE *out, const char *argv0)
 {
     fprintf(out,
             "Usage: %s [--headless] [--scenario FILE] [--run-ms N] "
-            "[--screenshot FILE.ppm]\n"
+            "[--screenshot FILE.ppm] [--board watcher|waveshare-s3-175c]\n"
             "\n"
             "Scenario lines are key=value. Supported keys:\n"
             "  face=boot|idle|listening|thinking|speaking|error|off|happy\n"
@@ -68,6 +69,7 @@ static void usage(FILE *out, const char *argv0)
             "  ble=off|advertising|connected         passkey=0..999999\n"
             "  paired=true|false  link=boot|unpaired|pairing|confirm|connecting|online|offline|error\n"
             "  speaker=true|false brightness=10..100 advance=MILLISECONDS\n"
+            "  touch=X,Y,down|up|move                expect_speaker=true|false\n"
             "\n"
             "Interactive keys: F1..F7 select face states, H is happy, Space is\n"
             "push-to-talk, +/- change level, [/] change progress, S sleeps,\n"
@@ -294,6 +296,19 @@ static bool apply_setting(const char *key, const char *value, bool real_time)
     bool flag;
     long number;
     float scalar;
+    if (!strncmp(key, "expect_ui_", 10) && parse_long(value, 0, 1000, &number)) {
+        extern bool muse_refined_check(const char *, int);
+        return muse_refined_check(key + 10, (int)number);
+    }
+    if (!strcmp(key, "expect_character") && parse_bool(value, &flag)) return muse_settings_character() == flag;
+    if (!strcmp(key, "expect_reduced_motion") && parse_bool(value, &flag)) return muse_settings_reduced_motion() == flag;
+    if (!strcmp(key, "reply")) {
+        extern void muse_reply_publish(const char *, size_t);
+        muse_reply_publish(value, 0); return true;
+    }
+    if (!strcmp(key, "view")) return muse_ui_preview_page(value);
+    if (!strcmp(key, "character") && parse_bool(value, &flag)) { muse_settings_set_character(flag); return true; }
+    if (!strcmp(key, "reduced_motion") && parse_bool(value, &flag)) { muse_settings_set_reduced_motion(flag); return true; }
     if (!strcmp(key, "face")) {
         return set_face(value);
     }
@@ -356,6 +371,34 @@ static bool apply_setting(const char *key, const char *value, bool real_time)
     if (!strcmp(key, "speaker") && parse_bool(value, &flag)) {
         sim_services_set_speaker(flag);
         return true;
+    }
+    if (!strcmp(key, "expect_speaker") && parse_bool(value, &flag)) {
+        return muse_settings_speaker_on() == flag;
+    }
+    if (!strcmp(key, "touch")) {
+        int x, y;
+        char action[8], extra;
+        if (sscanf(value, "%d,%d,%7[a-z]%c", &x, &y, action, &extra) != 3 ||
+            x < 0 || y < 0 || x >= muse_board->width || y >= muse_board->height) {
+            return false;
+        }
+        SDL_Event event = {0};
+        uint32_t window = SDL_GetWindowID(lv_sdl_window_get_window(sim_board_display()));
+        if (!strcmp(action, "move")) {
+            event.type = SDL_MOUSEMOTION;
+            event.motion.windowID = window;
+            event.motion.x = x;
+            event.motion.y = y;
+        } else if (!strcmp(action, "down") || !strcmp(action, "up")) {
+            event.type = !strcmp(action, "down") ? SDL_MOUSEBUTTONDOWN : SDL_MOUSEBUTTONUP;
+            event.button.windowID = window;
+            event.button.button = SDL_BUTTON_LEFT;
+            event.button.x = x;
+            event.button.y = y;
+        } else {
+            return false;
+        }
+        return SDL_PushEvent(&event) == 1;
     }
     if (!strcmp(key, "brightness") && parse_long(value, 10, 100, &number)) {
         sim_services_set_brightness((int)number);
@@ -476,6 +519,11 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--headless")) {
             headless = true;
+        } else if (!strcmp(argv[i], "--board") && i + 1 < argc) {
+            if (!sim_board_select(argv[++i])) {
+                fprintf(stderr, "unknown simulator board: %s\n", argv[i]);
+                return 2;
+            }
         } else if (!strcmp(argv[i], "--scenario") && i + 1 < argc) {
             scenario = argv[++i];
         } else if (!strcmp(argv[i], "--screenshot") && i + 1 < argc) {

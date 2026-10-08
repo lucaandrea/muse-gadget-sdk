@@ -1,0 +1,10 @@
+face=listening
+advance=120
+face=thinking
+advance=400
+reply=A little space can change your day. Step outside, take one slow breath, and notice the light around you. You do not need to do everything at once. Choose one small thing that matters and begin there. I will be here when you want to talk about what comes next.
+face=speaking
+level=0.35
+advance=800
+view=reading
+advance=400

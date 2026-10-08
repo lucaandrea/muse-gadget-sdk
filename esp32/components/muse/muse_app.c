@@ -31,6 +31,9 @@
 #include "muse_ui.h"
 #include "muse_voice.h"
 #include "muse_wifi.h"
+#if CONFIG_MUSE_POCKET
+#include "muse_pocket.h"
+#endif
 
 static const char *TAG = "muse";
 
@@ -68,6 +71,9 @@ void muse_app_run(const muse_board_t *board)
     ESP_ERROR_CHECK(muse_settings_init());
     muse_settings_set_listener(on_setting);
     muse_state_init();
+#if CONFIG_MUSE_POCKET
+    muse_pocket_init();
+#endif
     muse_battery_init();
     muse_state_set_caption("WAKING UP...");
     ESP_ERROR_CHECK(muse_ui_start());
@@ -89,7 +95,12 @@ void muse_app_run(const muse_board_t *board)
         muse_state_set_caption("%s", "");   /* the button icons say how to talk */
     }
 
+#if CONFIG_MUSE_POCKET
+    if (muse_pocket_enabled()) muse_pocket_start();
+    else muse_hatch_start();
+#else
     muse_hatch_start();
+#endif
     /* Home Link owns the radios; these just hand it the saved settings. */
     muse_wifi_apply();
     muse_ble_apply();

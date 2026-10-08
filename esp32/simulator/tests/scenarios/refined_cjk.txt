@@ -1,0 +1,7 @@
+face=listening
+advance=120
+face=thinking
+reply=你好，世界。今日はゆっくり深呼吸しましょう。 Take one small step, and let the rest follow. 每一天都是新的开始。
+advance=500
+view=reading
+advance=400

@@ -31,8 +31,8 @@ extern "C" {
  * Home Link uses) and runs each push-to-talk turn over it, entirely on the VM:
  *   speech -> POST /api/voice/dictation (streamed 24 kHz PCM, NDJSON transcripts)
  *   text   -> POST /chat/stream, reply events on POST /chat/subscribe
- *   reply  -> text, shown at reading pace (start_tts in muse_chat_session.cpp
- *             is where a TTS API of your own would plug in)
+ *   reply  -> OpenAI streamed speech and captions, or reading pace when muted
+ *             (provision the speech key through tools/muse/tts.py)
  *
  * Credentials: a device token, exchanged through the Muse API for the VM's own
  * token. If the account API rejects it and a VM ID is set, the token is tried
@@ -94,6 +94,7 @@ typedef enum {
     MUSE_HATCH_EV_DONE,     /* reply complete; the audio stream is drained after this */
     MUSE_HATCH_EV_ERROR,    /* turn failed; text says why */
     MUSE_HATCH_EV_SENT,     /* the VM has acknowledged the note */
+    MUSE_HATCH_EV_SPEECH_ERROR, /* text remains available if speech fails */
 } muse_hatch_ev_t;
 
 /* Non-blocking; copies the event's text. Events of cancelled turns are dropped. */
@@ -111,6 +112,10 @@ size_t muse_hatch_turn_read(int16_t *pcm, size_t frames, int wait_ms);
 
 /* Bench test: decodes a built-in MP3 to 16 kHz; caller frees *pcm. Returns frames. */
 size_t muse_hatch_mp3_selftest(int16_t **pcm);
+
+/* Voice task only (CONFIG_MUSE_HATCH): a fixed test through the real speech
+ * and playback path, without posting a message to the user's Muse chat. */
+void muse_hatch_speech_test(void);
 
 /*
  * As muse_hatch_turn_audio, for a note recorded before the turn began: takes

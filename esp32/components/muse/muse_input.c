@@ -42,7 +42,13 @@
 #include "muse_state.h"
 #include "muse_ui.h"
 #include "muse_voice.h"
+#if CONFIG_MUSE_POCKET
+#include "muse_pocket.h"
+#endif
 #include "muse_wifi.h"
+#if CONFIG_MUSE_HATCH
+#include "muse_tts.h"
+#endif
 #if CONFIG_MUSE_WATCHER_CAMERA
 #include "boards/watcher_camera.h"
 #endif
@@ -570,6 +576,38 @@ static void set_face(const char *name)
  */
 static bool console_command(char *line, bool whole)
 {
+#if CONFIG_MUSE_POCKET
+    if (muse_pocket_console(line, whole)) return true;
+#endif
+#if CONFIG_MUSE_HATCH
+    if (!strncmp(line, "openai.key=", 11)) {
+        esp_err_t err = whole ? muse_tts_set_key(line + 11) : ESP_ERR_INVALID_ARG;
+        /* This secret command is handled before the general setup logger. */
+        memset(line + 11, 0, strlen(line + 11));
+        printf("@speech.key %s\n", err == ESP_OK ? "saved" : "error");
+        fflush(stdout);
+        return true;
+    }
+    if (!strcmp(line, "speech.status")) {
+        printf("@speech {\"configured\":%s,\"model\":\"%s\",\"voice\":\"%s\"}\n",
+               muse_tts_configured() ? "true" : "false", MUSE_TTS_MODEL, MUSE_TTS_VOICE);
+        fflush(stdout);
+        return true;
+    }
+    if (!strcmp(line, "speech.test")) {
+        muse_voice_request_speechtest();
+        return true;
+    }
+#endif
+    if (!strcmp(line, "ui.metrics")) {
+        muse_ui_report_metrics();
+        return true;
+    }
+    if (!strncmp(line, "ui=", 3)) {
+        bool ok = whole && muse_ui_preview_page(line + 3);
+        ESP_LOGI(TAG, "UI preview: %s", ok ? "ready" : "unavailable");
+        return true;
+    }
     if (!strcmp(line, "status")) {
         size_t cap = 1024;   /* long SSID, host and VM names escaped: past 512 */
         char *json = heap_caps_malloc(cap, MUSE_BIG_CAPS);
