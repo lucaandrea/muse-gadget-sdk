@@ -70,8 +70,41 @@ class OpenAI:
         return result.json()["text"]
 
     async def speak(self, text: str) -> bytes:
-        response = await self.request("POST", "audio/speech", json={"model": "gpt-4o-mini-tts", "voice": self.settings.voice, "input": text[:3000], "response_format": "pcm"})
-        return resample_24_to_16(response.content)
+        return b"".join([chunk async for chunk in self.speak_stream(text)])
+
+    async def speak_stream(self, text: str):
+        if not self.settings.api_key:
+            raise ProviderError("Set OPENAI_API_KEY on the companion backend")
+        self.reserve()
+        carry, received = bytearray(), 0
+        try:
+            async with self.http.stream("POST", "audio/speech", json={"model": "gpt-4o-mini-tts", "voice": self.settings.voice,
+                "input": text[:3000], "response_format": "pcm"}) as response:
+                if response.is_error:
+                    raise ProviderError(f"OpenAI returned HTTP {response.status_code}; check account access and limits")
+                async for chunk in response.aiter_bytes(chunk_size=1920):
+                    received += len(chunk)
+                    if received > 24000 * 2 * 120:
+                        raise ProviderError("Speech exceeded the two-minute playback limit")
+                    carry.extend(chunk)
+                    # Three PCM24k samples become two PCM16k samples. Keep
+                    # incomplete groups across arbitrary HTTP chunk boundaries.
+                    length = len(carry) // 6 * 6
+                    if length:
+                        yield resample_24_to_16(bytes(carry[:length]))
+                        del carry[:length]
+        except httpx.HTTPError:
+            raise ProviderError("Speech stream was interrupted") from None
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        if not texts or len(texts) > 50 or any(not t.strip() or len(t) > 5000 for t in texts):
+            raise ValueError("Embed one to fifty bounded, non-empty texts")
+        result = (await self.request("POST", "embeddings", json={"model": "text-embedding-3-small", "input": texts,
+            "encoding_format": "float", "dimensions": 256})).json()
+        data = sorted(result.get("data", []), key=lambda item: item["index"])
+        if [item["index"] for item in data] != list(range(len(texts))):
+            raise ProviderError("Embedding response was incomplete")
+        return [item["embedding"] for item in data]
 
     async def image(self, prompt: str) -> bytes:
         result = (await self.request("POST", "images/generations", json={"model": "gpt-image-2.5-flare", "prompt": prompt[:4000], "size": "1024x1024", "quality": "low", "n": 1})).json()

@@ -26,18 +26,24 @@ class Conflict(ValueError):
 
 
 class Store:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, database_url: str = ""):
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.lock = threading.RLock()
-        self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
-        os.chmod(path, 0o600)
-        self.db.row_factory = sqlite3.Row
+        self.backend = "postgresql" if database_url else "sqlite"
+        if database_url:
+            from .database import Postgres
+            self.db = Postgres(database_url)
+        else:
+            self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
+            os.chmod(path, 0o600)
+            self.db.row_factory = sqlite3.Row
         self.db.executescript("""
             PRAGMA journal_mode=WAL;
             PRAGMA foreign_keys=ON;
             PRAGMA busy_timeout=5000;
             CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT UNIQUE NOT NULL, role TEXT NOT NULL, revoked INTEGER DEFAULT 0);
             CREATE TABLE IF NOT EXISTS memories(id TEXT PRIMARY KEY, text TEXT NOT NULL, original TEXT NOT NULL, source TEXT NOT NULL, created REAL NOT NULL, updated REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS memory_context(id TEXT PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,project_id TEXT NOT NULL DEFAULT '',person_id TEXT NOT NULL DEFAULT '',model TEXT NOT NULL DEFAULT '',digest TEXT NOT NULL DEFAULT '',embedding TEXT NOT NULL DEFAULT '[]');
             CREATE TABLE IF NOT EXISTS reminders(id TEXT PRIMARY KEY, title TEXT NOT NULL, due REAL NOT NULL, ssid TEXT DEFAULT '', state TEXT DEFAULT 'scheduled', delivered REAL, revision INTEGER DEFAULT 1);
             CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY, title TEXT NOT NULL, state TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL, result TEXT DEFAULT '', error TEXT DEFAULT '', created REAL NOT NULL, updated REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, state TEXT NOT NULL, result TEXT, created REAL NOT NULL);
@@ -45,6 +51,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS notifications(id TEXT PRIMARY KEY, title TEXT NOT NULL, body TEXT NOT NULL, sender TEXT NOT NULL, priority TEXT NOT NULL, reason TEXT NOT NULL, state TEXT DEFAULT 'unread', created REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS documents(id TEXT PRIMARY KEY, name TEXT NOT NULL, remote_id TEXT NOT NULL, state TEXT NOT NULL, created REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS blobs(id TEXT PRIMARY KEY,content BLOB NOT NULL,created REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS usage(day TEXT NOT NULL, category TEXT NOT NULL, amount REAL DEFAULT 0, PRIMARY KEY(day, category));
             CREATE TABLE IF NOT EXISTS conversation(seq INTEGER PRIMARY KEY AUTOINCREMENT, role TEXT NOT NULL, text TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS captures(id TEXT PRIMARY KEY, digest TEXT NOT NULL, pcm BLOB NOT NULL, state TEXT NOT NULL DEFAULT 'queued', transcript TEXT, result TEXT, error TEXT DEFAULT '', created REAL NOT NULL);
@@ -57,12 +64,12 @@ class Store:
             self.execute("ALTER TABLE tasks ADD COLUMN revision INTEGER NOT NULL DEFAULT 1")
         if "context" not in {r["name"] for r in self.rows("PRAGMA table_info(captures)")}:
             self.execute("ALTER TABLE captures ADD COLUMN context TEXT NOT NULL DEFAULT '{}'")
-        self.execute("PRAGMA user_version=4")
+        self.execute("PRAGMA user_version=5")
     def recover(self):
         # Only the service calls this on startup, never provisioning clients.
         # Never blindly repeat an external side effect after process failure.
         self.db.execute("UPDATE tasks SET state='uncertain',error='Interrupted during execution; verify the external result before retrying' WHERE state='executing'")
-        self.db.execute("UPDATE tasks SET state='queued' WHERE state='running' AND kind IN ('research','briefing','meeting','lesson','computer')")
+        self.db.execute("UPDATE tasks SET state='queued' WHERE state='running' AND kind IN ('research','briefing','meeting','lesson','computer','studio')")
         self.db.execute("UPDATE operations SET state='uncertain' WHERE state='running'")
         self.db.execute("UPDATE captures SET state='queued' WHERE state='transcribing'")
         self.db.execute("UPDATE captures SET state='needs_review',error='Interrupted during assistant execution; check task state before retrying' WHERE state='processing'")
@@ -105,6 +112,26 @@ class Store:
         self.execute("INSERT INTO devices(id,name,token_hash,role) VALUES (?,?,?,?)", (identity, name[:80], token_hash(token), role))
         return {"id": identity, "name": name[:80], "token": token, "role": role}
 
+    def provision_owner(self, token: str):
+        if len(token) < 32:
+            raise ValueError("MUSE_OWNER_TOKEN must contain at least 32 characters")
+        with self.transaction():
+            existing = self.one("SELECT token_hash FROM devices WHERE id='hosted-owner'")
+            if existing and existing["token_hash"] != token_hash(token):
+                raise Conflict("Hosted owner token differs from the database. Rotate it explicitly before changing the deployment secret")
+            if self.one("SELECT id FROM devices WHERE token_hash=? AND role='owner' AND revoked=0", (token_hash(token),)):
+                return  # Preserve an owner's identity after a local-to-cloud restore.
+            self.execute("INSERT OR IGNORE INTO devices(id,name,token_hash,role) VALUES ('hosted-owner','Companion owner',?,'owner')", (token_hash(token),))
+
+    def put_blob(self, identity: str, content: bytes):
+        if len(content) > 24 * 1024 * 1024:
+            raise ValueError("Keep original documents below 24 MB")
+        self.execute("INSERT INTO blobs VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET content=excluded.content,created=excluded.created", (identity, content, time.time()))
+
+    def blob(self, identity: str):
+        row = self.one("SELECT content FROM blobs WHERE id=?", (identity,))
+        return bytes(row["content"]) if row else None
+
     def authenticate(self, token: str) -> dict | None:
         return self.one("SELECT id,name,role FROM devices WHERE token_hash=? AND revoked=0", (token_hash(token),))
 
@@ -133,7 +160,7 @@ class Store:
     def events(self, after: int) -> list[dict]:
         return [{**row, "payload": json.loads(row["payload"])} for row in self.rows("SELECT * FROM events WHERE seq>? ORDER BY seq LIMIT 50", (after,))]
 
-    def save_memory(self, text: str, source: str, identity: str | None = None) -> dict:
+    def save_memory(self, text: str, source: str, identity: str | None = None, *, project_id: str | None = None, person_id: str | None = None) -> dict:
         now = time.time()
         if identity:
             if not self.execute("UPDATE memories SET text=?,updated=? WHERE id=?", (text, now, identity)):
@@ -142,7 +169,9 @@ class Store:
         else:
             identity = new_id()
             self.execute("INSERT INTO memories VALUES (?,?,?,?,?,?)", (identity, text, text, source, now, now))
-        return self.one("SELECT * FROM memories WHERE id=?", (identity,))
+        self.execute("INSERT OR IGNORE INTO memory_context(id) VALUES (?)", (identity,))
+        self.execute("UPDATE memory_context SET project_id=COALESCE(?,project_id),person_id=COALESCE(?,person_id),digest='',embedding='[]' WHERE id=?", (project_id, person_id, identity))
+        return self.one("SELECT m.*,c.project_id,c.person_id FROM memories m JOIN memory_context c ON c.id=m.id WHERE m.id=?", (identity,))
 
     def search_memories(self, query: str) -> list[dict]:
         # A literal search, not SQL or FTS syntax; the agent can try related terms.
@@ -198,7 +227,7 @@ class Store:
     def revise_work(self, identity, instruction):
         with self.transaction():
             task = self.one("SELECT * FROM tasks WHERE id=?", (identity,))
-            if not task or task["kind"] not in ("research", "briefing", "lesson", "meeting") or task["state"] not in ("queued", "running", "completed", "failed"):
+            if not task or task["kind"] not in ("research", "briefing", "lesson", "meeting", "studio") or task["state"] not in ("queued", "running", "completed", "failed"):
                 raise Conflict("Only analysis work can be revised; external actions require a new proposal")
             if not instruction.strip() or len(instruction) > 12000 or task["revision"] >= 100:
                 raise ValueError("Provide a correction of up to 12000 characters; start a new task after 100 revisions")

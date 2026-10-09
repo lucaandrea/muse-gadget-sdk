@@ -22,10 +22,14 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     serve = sub.add_parser("serve")
     serve.add_argument("--host", default="127.0.0.1")
-    serve.add_argument("--port", type=int, default=8765)
+    serve.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8765")))
     serve.add_argument("--cert", type=Path)
     serve.add_argument("--key", type=Path)
     sub.add_parser("doctor")
+    backup = sub.add_parser("backup", help="Create an encrypted logical backup using the stable owner secret")
+    backup.add_argument("--output", type=Path, required=True)
+    restore = sub.add_parser("restore", help="Restore into an empty database using the original stable owner secret")
+    restore.add_argument("--input", type=Path, required=True)
     sub.add_parser("grep-connect", help="Authorize read-only Grep access with employee browser sign-in")
     sub.add_parser("grep-status", help="Check Grep authorization without printing credentials")
     sub.add_parser("grep-disconnect", help="Revoke the Grep child session and remove its local credential")
@@ -39,13 +43,22 @@ def main():
     tls.add_argument("--address", required=True, help="This computer's LAN IP; used as a certificate SAN")
     args = parser.parse_args()
     settings = Settings.load(args.env)
+    if args.command in ("backup", "restore"):
+        from .backup import export_backup, restore_backup
+        store = Store(settings.data_dir / "muse.sqlite3", settings.database_url)
+        try:
+            counts = export_backup(store, settings, args.output) if args.command == "backup" else restore_backup(store, settings, args.input)
+            print(json.dumps({"result": args.command + " complete", "row_counts": counts}))
+        finally:
+            store.close()
+        return
     if args.command == "grep-connect":
         from .grep_auth import connect
         connect(settings)
         return
     if args.command in ("grep-status", "grep-disconnect"):
         from .grep import Grep
-        store = Store(settings.data_dir / "muse.sqlite3")
+        store = Store(settings.data_dir / "muse.sqlite3", settings.database_url)
         grep = Grep(settings, store)
         try:
             if args.command == "grep-disconnect": print(json.dumps(asyncio.run(grep.disconnect())))
@@ -60,7 +73,7 @@ def main():
     if args.command == "serve":
         from .app import create_app
         app = create_app(settings)
-        print(f"Companion access key is in {settings.data_dir / 'owner-token'} (not the OpenAI key).")
+        print("Using the stable hosted owner secret." if settings.owner_token else f"Companion access key is in {settings.data_dir / 'owner-token'} (not the OpenAI key).")
         uvicorn.run(app, host=args.host, port=args.port, ssl_certfile=str(args.cert) if args.cert else None,
                     ssl_keyfile=str(args.key) if args.key else None, access_log=False, ws_max_size=2**20)
     elif args.command == "install-service":
@@ -75,7 +88,7 @@ def main():
         url = urlparse(args.url)
         if url.scheme != "wss" or not url.hostname or url.username or url.password or url.query or url.fragment or url.path != "/v1/device":
             parser.error("Use wss://host:port/v1/device without credentials, a query or a fragment")
-        store = Store(settings.data_dir / "muse.sqlite3")
+        store = Store(settings.data_dir / "muse.sqlite3", settings.database_url)
         device = store.create_device(args.name)
         device["url"] = args.url
         device["ca"] = args.ca.read_text() if args.ca else ""
@@ -98,7 +111,7 @@ def main():
         print(f"Certificate: {cert}\nPrivate key: {key}")
     elif args.command == "doctor":
         async def doctor():
-            store = Store(settings.data_dir / "muse.sqlite3")
+            store = Store(settings.data_dir / "muse.sqlite3", settings.database_url)
             provider = OpenAI(settings, store)
             try:
                 data = (await provider.request("GET", "models")).json()

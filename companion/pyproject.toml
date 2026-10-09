@@ -7,10 +7,13 @@ name = "muse-companion"
 version = "0.1.0"
 description = "Private voice, memory, reminders and tools for Muse pocket devices"
 requires-python = ">=3.12"
-dependencies = ["fastapi>=0.115,<1", "uvicorn>=0.34,<1", "httpx>=0.28,<1", "websockets>=15,<17", "python-multipart>=0.0.20", "pillow>=11,<13"]
+dependencies = ["fastapi>=0.115,<1", "uvicorn>=0.34,<1", "httpx>=0.28,<1", "websockets>=15,<17", "python-multipart>=0.0.20", "pillow>=11,<13", "cryptography>=46,<51"]
 
 [project.optional-dependencies]
 test = ["pytest>=8", "pytest-asyncio>=0.25"]
+cloud = ["psycopg[binary]>=3.2,<4", "mcp>=1.30,<2"]
+replit = ["mcp>=1.30,<2"]
+test-cloud = ["pgserver>=0.1.4,<0.2", "psycopg[binary]>=3.2,<4"]
 
 [project.scripts]
 muse-companion = "muse_companion.cli:main"

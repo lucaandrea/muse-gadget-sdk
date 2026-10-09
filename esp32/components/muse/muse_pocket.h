@@ -16,3 +16,8 @@ void muse_pocket_speech_test(void);
 bool muse_pocket_action(const char *id, const char *action);
 /* Handles credentials before the generic console logger; never prints them. */
 bool muse_pocket_console(char *line, bool whole);
+
+/* Local power policy runs even while the companion is unreachable. */
+bool muse_pocket_wifi_nap(bool asleep_on_battery, bool force);
+bool muse_pocket_ota_ready(void);
+bool muse_pocket_notebook_recording(void);

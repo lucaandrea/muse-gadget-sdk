@@ -87,6 +87,13 @@ static void post(muse_ptt_t type, bool wake)
     xQueueSend(s_queue, &ev, 0);
 }
 
+bool muse_input_request_talk(void)
+{
+    muse_input_event_t ev={.type=MUSE_PTT_DOWN,.wake=false};
+    muse_state_set_asleep(false); muse_state_poke();
+    return s_queue && xQueueSend(s_queue,&ev,0)==pdTRUE;
+}
+
 static bool update_power(void);
 
 static void power_off(void)
@@ -387,6 +394,9 @@ static bool update_wifi_nap(TickType_t now, bool paused)
     }
     bool nap = paused && !muse_voice_notes_waiting()
                && (s_nap_now || (s_cpu_low && now - low_since >= pdMS_TO_TICKS(WIFI_NAP_MS)));
+#if CONFIG_MUSE_POCKET
+    if (muse_pocket_enabled()) nap = muse_pocket_wifi_nap(paused && muse_state_on_battery(), s_nap_now);
+#endif
     if (nap != napping) {
         napping = nap;
         ESP_LOGI(TAG, "Wi-Fi %s", nap ? "napping" : "waking");

@@ -24,11 +24,22 @@ class Card(StrictModel):
     source: str = Field(default="", max_length=200)
     status: str = Field(default="", max_length=32)
     buttons: list[Button] = Field(default_factory=list, max_length=3)
+    progress: int | None = Field(default=None, ge=0, le=100)
+    steps: list[str] = Field(default_factory=list, max_length=3)
+
+    @field_validator("steps")
+    @classmethod
+    def bounded_steps(cls, value):
+        if any(len(step.encode("utf-8")) > 80 for step in value):
+            raise ValueError("Diagram labels must fit 80 UTF-8 bytes")
+        return value
 
 
 class MemoryIn(StrictModel):
     text: str = Field(min_length=1, max_length=4000)
     source: str = Field(default="typed", max_length=120)
+    project_id: str | None = Field(default=None, max_length=64)
+    person_id: str | None = Field(default=None, max_length=64)
 
 
 class ReminderIn(StrictModel):
@@ -53,6 +64,7 @@ class ActionIn(StrictModel):
     action: Literal["done", "snooze", "approve", "reject", "dismiss", "cancel", "language_a", "language_b", "end_interpret", "study", "study_next", "study_end", "choice_a", "choice_b", "choice_c"]
     operation_id: str = Field(min_length=8, max_length=96)
     minutes: int = Field(default=10, ge=1, le=10080)
+    snooze_until: float | None = Field(default=None, ge=1, le=253402300799, allow_inf_nan=False)
 
 
 class NotificationIn(StrictModel):

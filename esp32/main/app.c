@@ -2419,13 +2419,20 @@ static void on_ws_control_status(const char *status) {
 // We gate validation on the control WS coming up: that's the channel a future
 // device.ota would arrive on, so if the new image can't reach it, reverting is
 // the only way to keep the device recoverable.
+#if CONFIG_MUSE_POCKET
+#include "muse_pocket.h"
+#endif
 static void ota_verify_task(void *arg) {
     (void)arg;
     int64_t deadline = esp_timer_get_time() + OTA_VERIFY_TIMEOUT_US;
     while (esp_timer_get_time() < deadline) {
-        if (noise_ctrl_is_connected()) {
+        bool healthy = noise_ctrl_is_connected();
+#if CONFIG_MUSE_POCKET
+        if (muse_pocket_enabled()) healthy = muse_pocket_ota_ready();
+#endif
+        if (healthy) {
             if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) {
-                ESP_LOGI(TAG, "OTA image validated (control WS up)");
+                ESP_LOGI(TAG, "OTA image validated (configured transport and storage healthy)");
             } else {
                 ESP_LOGE(TAG, "esp_ota_mark_app_valid_cancel_rollback failed");
             }

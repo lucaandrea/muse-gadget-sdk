@@ -1,0 +1,12 @@
+entrypoint = "companion/src/muse_companion/app.py"
+modules = ["python-3.12"]
+run = ["sh", "companion/deploy/run.sh"]
+
+[deployment]
+build = ["sh", "companion/deploy/build.sh"]
+run = ["sh", "companion/deploy/run.sh"]
+deploymentTarget = "vm"
+
+[[ports]]
+localPort = 8765
+externalPort = 80
