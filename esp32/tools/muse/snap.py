@@ -21,6 +21,10 @@ sent as one line: '>face=thinking' puts the avatar in a mode, '>face=happy' pets
 In screenshot builds, '>ui=settings' opens the real settings page; wifi, muse,
 bluetooth, sound, sleep, battery and face are also available. These page previews
 use normal navigation, including the Sound page's live microphone meter.
+With the pocket Inbox visible, '>ui=card-next' selects its next card;
+'>ui=card-0', 'card-1', and 'card-2' activate the corresponding visible button.
+'card-phone' opens its handoff QR and 'card-back' closes the Inbox. These controls
+only exist in snapshot builds and run the same LVGL callbacks as a tap.
 Screenshots are off by default; build and flash with MUSE_BENCH=1 tools/muse/board.sh.
 With reset_wait_s the board is reset first and given that long to boot.
 The PNG is scaled 3x so small screens are readable.

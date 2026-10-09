@@ -1523,6 +1523,11 @@ bool muse_ui_preview_page(const char *name)
     if (s_refined && muse_refined_preview(name)) face = true;
 #endif
 #if CONFIG_MUSE_POCKET
+    if (!strncmp(name, "card-", 5)) {
+        bool ok = muse_cards_bench_action(name + 5);
+        muse_board->display_unlock();
+        return ok;
+    }
     if (face) muse_cards_show(false);
     if (!strcmp(name, "inbox")) {
         muse_cards_show(true);

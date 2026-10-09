@@ -31,13 +31,18 @@ MAX_UPLOAD = 24 * 1024 * 1024
 
 def create_app(settings: Settings | None = None, provider=None) -> FastAPI:
     settings = settings or Settings.load()
-    store = Store(settings.data_dir / "muse.sqlite3")
+    if settings.hosted and (not settings.database_url or len(settings.owner_token) < 32):
+        raise ValueError("Hosted mode requires durable storage and a stable owner secret")
+    settings.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    store = Store(settings.data_dir / "muse.sqlite3", settings.database_url)
     provider = provider or OpenAI(settings, store)
     integrations = Integrations(settings.integrations_file, settings.integration_credentials)
     assistant = Assistant(settings, store, provider, integrations)
     voice_lock = asyncio.Lock()  # one pocket owner; one active microphone session
     owner_path = settings.data_dir / "owner-token"
-    if not owner_path.exists():
+    if settings.owner_token:
+        store.provision_owner(settings.owner_token)
+    elif not owner_path.exists():
         owner_path.write_text(store.create_device("Companion owner", "owner")["token"])
         owner_path.chmod(0o600)
 
@@ -55,6 +60,10 @@ def create_app(settings: Settings | None = None, provider=None) -> FastAPI:
         for task in assistant.background.values():
             task.cancel()
         await asyncio.gather(worker, *assistant.background.values(), return_exceptions=True)
+        if assistant.source_sync_task:
+            assistant.source_sync_task.cancel()
+            await asyncio.gather(assistant.source_sync_task, return_exceptions=True)
+        await assistant.replit.close()
         await provider.close()
         store.close()
 
@@ -75,13 +84,13 @@ def create_app(settings: Settings | None = None, provider=None) -> FastAPI:
 
     def check_origin(request):
         origin = request.headers.get("origin")
-        expected = f"{'https' if request.url.scheme in ('https','wss') else 'http'}://{request.headers.get('host','')}"
+        expected = settings.public_url or f"{'https' if request.url.scheme in ('https','wss') else 'http'}://{request.headers.get('host','')}"
         if origin and origin != expected:
             raise HTTPException(403, "Cross-origin request rejected")
 
     def identity(request: Request):
         check_origin(request)
-        authorization = request.headers.get("authorization", "")
+        authorization = request.headers.get("x-muse-authorization") or request.headers.get("authorization", "")
         token = authorization[7:] if authorization.startswith("Bearer ") else request.cookies.get("muse_session", "")
         user = store.authenticate(token)
         if not user:
@@ -129,7 +138,7 @@ def create_app(settings: Settings | None = None, provider=None) -> FastAPI:
             await asyncio.sleep(0.2)
             raise HTTPException(401, "Invalid access key")
         response = JSONResponse({"ok": True})
-        response.set_cookie("muse_session", token, httponly=True, secure=request.url.scheme == "https", samesite="strict", max_age=7*86400)
+        response.set_cookie("muse_session", token, httponly=True, secure=settings.public_url.startswith("https://") or request.url.scheme == "https", samesite="strict", max_age=7*86400)
         return response
 
     @app.post("/api/logout")
@@ -175,6 +184,11 @@ def create_app(settings: Settings | None = None, provider=None) -> FastAPI:
     async def grep_disconnect(user=Depends(owner)):
         return await assistant.grep.disconnect()
 
+    @app.post("/api/grep/session")
+    async def grep_session(data: dict, user=Depends(owner)):
+        assistant.grep.import_auth(data)
+        return assistant.grep.status()
+
     @app.post("/api/chat")
     async def chat(data: ChatIn, user=Depends(identity)):
         return await assistant.chat(data.text, user["id"] + ":" + data.operation_id)
@@ -199,11 +213,17 @@ def create_app(settings: Settings | None = None, provider=None) -> FastAPI:
 
     @app.post("/api/memories")
     async def memory(data: MemoryIn, user=Depends(identity)):
-        return store.save_memory(data.text, data.source)
+        assistant.studio.validate_links(data.project_id, data.person_id)
+        return store.save_memory(data.text, data.source, project_id=data.project_id, person_id=data.person_id)
 
     @app.put("/api/memories/{item_id}")
     async def correct_memory(item_id: str, data: MemoryIn, user=Depends(identity)):
-        return store.save_memory(data.text, data.source, item_id)
+        assistant.studio.validate_links(data.project_id, data.person_id)
+        return store.save_memory(data.text, data.source, item_id, project_id=data.project_id, person_id=data.person_id)
+
+    @app.get("/api/memories/search")
+    async def recall(query: str = "", project_id: str = "", person_id: str = "", user=Depends(identity)):
+        return await assistant.memory.search(query, project_id, person_id)
 
     @app.delete("/api/memories/{item_id}")
     async def forget_memory(item_id: str, user=Depends(identity)):
@@ -228,7 +248,7 @@ def create_app(settings: Settings | None = None, provider=None) -> FastAPI:
 
     @app.post("/api/items/{item_id}/action")
     async def action(item_id: str, data: ActionIn, user=Depends(identity)):
-        return await assistant.action(item_id, data.action, user["id"] + ":" + data.operation_id, data.minutes)
+        return await assistant.action(item_id, data.action, user["id"] + ":" + data.operation_id, data.minutes, data.snooze_until)
 
     @app.post("/api/tasks/{item_id}/cancel")
     async def cancel(item_id: str, user=Depends(identity)):
@@ -243,7 +263,7 @@ def create_app(settings: Settings | None = None, provider=None) -> FastAPI:
     @app.post("/api/tasks/{item_id}/retry")
     async def retry(item_id: str, user=Depends(identity)):
         task = store.one("SELECT * FROM tasks WHERE id=?", (item_id,))
-        if not task or task["kind"] not in ("research", "briefing", "lesson", "meeting") or task["state"] not in ("failed", "cancelled"):
+        if not task or task["kind"] not in ("research", "briefing", "lesson", "meeting", "studio") or task["state"] not in ("failed", "cancelled"):
             raise Conflict("Only failed or cancelled analysis tasks can be retried")
         return store.task(task["kind"], task["title"], json.loads(task["payload"]))
 
@@ -328,11 +348,11 @@ def create_app(settings: Settings | None = None, provider=None) -> FastAPI:
             raise ValueError("Use PDF, text, Markdown, DOCX, PPTX, JSON or HTML")
         remote, vector = await provider.upload_document(name, data)
         identity = new_id()
-        store.execute("INSERT INTO documents VALUES (?,?,?,'indexing',?)", (identity, name, remote, time.time()))
-        # Preserve the original locally for source inspection/download.
-        folder = settings.data_dir / "documents"
-        folder.mkdir(mode=0o700, exist_ok=True)
-        (folder / identity).write_bytes(data)
+        # The original and its index record commit together. Hosted deployments
+        # retain both in PostgreSQL, independently of an ephemeral app filesystem.
+        with store.transaction():
+            store.put_blob(identity, data)
+            store.execute("INSERT INTO documents VALUES (?,?,?,'indexing',?)", (identity, name, remote, time.time()))
         return {"id": identity, "name": name, "state": "indexing"}
 
     @app.get("/api/documents/{item_id}")
@@ -351,7 +371,15 @@ def create_app(settings: Settings | None = None, provider=None) -> FastAPI:
         row = store.one("SELECT name FROM documents WHERE id=?", (item_id,))
         if not row:
             raise HTTPException(404, "Document not found")
-        return FileResponse(settings.data_dir / "documents" / item_id, filename=row["name"], media_type="application/octet-stream")
+        original = store.blob(item_id)
+        if original is None:
+            # Read older local installations without changing their files.
+            path = settings.data_dir / "documents" / item_id
+            if not path.is_file():
+                raise HTTPException(404, "Original document unavailable")
+            return FileResponse(path, filename=row["name"], media_type="application/octet-stream")
+        from urllib.parse import quote
+        return Response(original, media_type="application/octet-stream", headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote(row["name"], safe="")})
 
     @app.delete("/api/documents/{item_id}")
     async def document_delete(item_id: str, user=Depends(owner)):
@@ -359,7 +387,9 @@ def create_app(settings: Settings | None = None, provider=None) -> FastAPI:
         if not row:
             raise HTTPException(404, "Document not found")
         await provider.request("DELETE", f"files/{row['remote_id']}")
-        store.execute("DELETE FROM documents WHERE id=?", (item_id,))
+        with store.transaction():
+            store.execute("DELETE FROM documents WHERE id=?", (item_id,))
+            store.execute("DELETE FROM blobs WHERE id=?", (item_id,))
         (settings.data_dir / "documents" / item_id).unlink(missing_ok=True)
         return {"ok": True}
 
@@ -417,6 +447,14 @@ def create_app(settings: Settings | None = None, provider=None) -> FastAPI:
 
     from .meetings import mount_meetings
     mount_meetings(app, store, provider, owner)
+    from .studio import mount_studio
+    mount_studio(app, assistant, owner)
+    from .diagnostics import mount_diagnostics
+    mount_diagnostics(app, assistant.diagnostics, owner)
+    from .replit import mount_replit
+    mount_replit(app, assistant.replit, owner)
+    from .work_accounts import mount_work_accounts
+    mount_work_accounts(app, assistant.work_accounts, owner)
 
     if STATIC.exists():
         app.mount("/assets", StaticFiles(directory=STATIC), name="assets")
@@ -430,16 +468,19 @@ def create_app(settings: Settings | None = None, provider=None) -> FastAPI:
 
 async def device_connection(ws, settings, store, assistant, provider, voice_lock, snapshot):
     origin = ws.headers.get("origin")
-    expected = f"{'https' if ws.url.scheme=='wss' else 'http'}://{ws.headers.get('host','')}"
-    token = ws.headers.get("authorization", "").removeprefix("Bearer ") or ws.cookies.get("muse_session", "")
+    expected = settings.public_url or f"{'https' if ws.url.scheme=='wss' else 'http'}://{ws.headers.get('host','')}"
+    token = (ws.headers.get("x-muse-authorization") or ws.headers.get("authorization", "")).removeprefix("Bearer ") or ws.cookies.get("muse_session", "")
     user = store.authenticate(token)
     if not user or (origin and origin != expected):
         await ws.close(code=1008)
         return
     await ws.accept()
+    socket_session = new_id()
+    assistant.diagnostics.observe(user["id"], socket_session)
     send_lock, background = asyncio.Lock(), set()
     generation, recording, operation, mode = 0, bytearray(), "", "recorded"
     language = "es"
+    notebook_context = {}
     live = None
     voice_started = 0.0
     sequence = 0
@@ -453,6 +494,11 @@ async def device_connection(ws, settings, store, assistant, provider, voice_lock
             if isinstance(data, bytes):
                 await ws.send_bytes(data)
             else:
+                if data.get("type") == "card" and settings.public_url:
+                    from urllib.parse import quote
+                    card = {**data["card"]}
+                    card["handoff"] = settings.public_url + "/#item=" + quote(card["id"], safe="")
+                    data = {**data, "card": card}
                 await ws.send_json({"v": 1, **data})
 
     async def emit(kind, value, epoch):
@@ -474,12 +520,30 @@ async def device_connection(ws, settings, store, assistant, provider, voice_lock
             await send({"type": "card", "card": card})
         return result
 
+    async def speak(text, epoch):
+        if epoch != generation or not socket_alive:
+            return
+        if hasattr(provider, "speak_stream"):
+            async with contextlib.aclosing(provider.speak_stream(text)) as chunks:
+                async for chunk in chunks:
+                    if epoch != generation or not socket_alive:
+                        break
+                    await emit("audio", chunk, epoch)
+        else:
+            await emit("audio", await provider.speak(text), epoch)
+
     async def recorded_turn(pcm, identity, epoch, context=None):
         try:
             op = user["id"] + ":voice:" + identity
-            store.capture(op, pcm, context)
+            if context and context.get("mode") == "notebook":
+                assistant.notebooks.accept(op, pcm, context)
+            else:
+                store.capture(op, pcm, context)
             # ACK means durable backend storage, independent of provider uptime.
             await send({"type": "voice.received", "id": identity})
+            if context and context.get("mode") == "notebook":
+                await send({"type": "voice.done", "generation": epoch})
+                return  # The durable scheduler transcribes segments independently.
             result = await assistant.process_capture(op)
             if result is None:
                 await emit("caption", "Capture saved. Follow its progress in the companion.", epoch)
@@ -492,8 +556,10 @@ async def device_connection(ws, settings, store, assistant, provider, voice_lock
                 await send({"type": "card", "card": card})
             if epoch == generation:
                 try:
-                    audio = result.get("_audio") or await provider.speak(result.get("text", "Saved"))
-                    await emit("audio", audio, epoch)
+                    if result.get("_audio"):
+                        await emit("audio", result["_audio"], epoch)
+                    else:
+                        await speak(result.get("text", "Saved"), epoch)
                 except ProviderError:
                     await emit("error", "Speech unavailable; the text result is saved", epoch)
             await send({"type": "voice.done", "generation": epoch})
@@ -508,7 +574,7 @@ async def device_connection(ws, settings, store, assistant, provider, voice_lock
             for card in result.get("cards", []):
                 await send({"type": "card", "card": card})
             if epoch == generation:
-                await emit("audio", await provider.speak(result["text"]), epoch)
+                await speak(result["text"], epoch)
         except (ValueError, ProviderError):
             await emit("error", "Request could not finish. Check saved task state.", epoch)
         finally:
@@ -518,7 +584,7 @@ async def device_connection(ws, settings, store, assistant, provider, voice_lock
         try:
             text = "Muse Companion is ready. This is an AI-generated voice."
             await emit("caption", text, epoch)
-            await emit("audio", await provider.speak(text), epoch)
+            await speak(text, epoch)
         except ProviderError:
             await emit("error", "Speech unavailable. Check the companion connection.", epoch)
         finally:
@@ -563,7 +629,7 @@ async def device_connection(ws, settings, store, assistant, provider, voice_lock
                     card = assistant.interpreter.card(user["id"])
                     await send({"type": "card", "card": card.model_dump()} if card else {"type": "card.remove", "id": "interpret:" + user["id"]})
             if ticks % 15 == 0:
-                await send({"type": "sync", "server_epoch": time.time(), "reminders": store.rows("SELECT * FROM reminders WHERE state!='done' ORDER BY due LIMIT 8")})
+                await send({"type": "sync", "server_epoch": time.time(), "accounts": assistant.diagnostics.pocket_accounts(), "reminders": store.rows("SELECT * FROM reminders WHERE state!='done' ORDER BY due LIMIT 8"), "todos": store.rows("SELECT id,title,state FROM tasks WHERE kind='todo' AND state!='completed' ORDER BY created LIMIT 8")})
                 for card in assistant.lessons.cards():
                     await send({'type':'card','card':card})
             if live and time.monotonic() - voice_started > settings.live_max_seconds:
@@ -622,7 +688,12 @@ async def device_connection(ws, settings, store, assistant, provider, voice_lock
             event = json.loads(text)
             kind = event.get("type")
             if kind == "ping":
+                assistant.diagnostics.observe(user["id"], socket_session)
                 await send({"type": "pong"})
+            elif kind == "device.health":
+                assistant.diagnostics.observe(user["id"], socket_session, report=event.get("health", {}))
+            elif kind == "compatibility.check":
+                await send({"type": "compatibility.result", **assistant.diagnostics.compatibility()})
             elif kind == "device.hello":
                 capabilities = event.get("capabilities", [])
                 store.set_setting("capabilities:" + user["id"], ["capture_modes_v1"] if isinstance(capabilities, list) and "capture_modes_v1" in capabilities else [])
@@ -652,8 +723,9 @@ async def device_connection(ws, settings, store, assistant, provider, voice_lock
                 active = True
                 generation = int(event.get("generation", 0)) & 0xffffffff
                 operation, mode, recording = identity, event.get("mode", "recorded"), bytearray()
-                if mode not in ("recorded", "live", "translate"):
+                if mode not in ("recorded", "live", "translate", "notebook"):
                     raise ValueError("Unknown voice mode")
+                notebook_context = {"notebook": str(event.get("notebook", "")), "position": event.get("position"), "marked": event.get("marked", False)} if mode == "notebook" else {}
                 language = str(event.get("language", "es"))
                 voice_started = time.monotonic()
                 if mode == "live":
@@ -668,7 +740,7 @@ async def device_connection(ws, settings, store, assistant, provider, voice_lock
                 if live:
                     task = asyncio.create_task(live_silence(live, generation))
                 else:
-                    context = {"device_id": user["id"], "mode": mode, "language": language if mode == "translate" else ""}
+                    context = {"device_id": user["id"], "mode": mode, "language": language if mode == "translate" else "", **notebook_context}
                     task = asyncio.create_task(recorded_turn(bytes(recording), operation, generation, context))
                     active = False
                     voice_lock.release()
@@ -680,8 +752,18 @@ async def device_connection(ws, settings, store, assistant, provider, voice_lock
                 await stop_live()
             elif kind == "action":
                 data = ActionIn.model_validate({k: v for k, v in event.items() if k in ActionIn.model_fields})
-                result = await assistant.action(str(event.get("id", "")), data.action, user["id"] + ":" + data.operation_id, data.minutes)
-                await send({"type": "action.result", "id": event.get("id"), "operation_id": data.operation_id, "result": result})
+                try:
+                    result = await assistant.action(str(event.get("id", "")), data.action, user["id"] + ":" + data.operation_id, data.minutes, data.snooze_until)
+                    await send({"type": "action.result", "id": event.get("id"), "operation_id": data.operation_id, "result": result})
+                except (ValueError, Conflict):
+                    await send({"type": "action.error", "id": event.get("id"), "operation_id": data.operation_id,
+                                "text": "Action needs review in the companion; it was not confirmed"})
+            elif kind == "notebook.finish":
+                try:
+                    result = assistant.notebooks.finish(user["id"], str(event.get("id", "")), event.get("segments"), event.get("markers", []))
+                    await send({"type": "notebook.saved", **result})
+                except ValueError:
+                    await send({"type": "notebook.error", "id": event.get("id"), "text": "Notebook finish needs review; saved segments are retained"})
             elif kind == "close":
                 break
             if live and time.monotonic() - voice_started > settings.live_max_seconds:
@@ -694,6 +776,7 @@ async def device_connection(ws, settings, store, assistant, provider, voice_lock
             await send({"type": "error", "text": "Connection request failed; reconnect and check saved task state"})
     finally:
         socket_alive = False
+        assistant.diagnostics.observe(user["id"], socket_session, connected=False)
         await stop_live()
         pump.cancel()
         await asyncio.gather(pump, return_exceptions=True)

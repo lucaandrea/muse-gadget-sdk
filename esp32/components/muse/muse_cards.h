@@ -4,6 +4,9 @@
 
 typedef struct {
     char id[65], kind[24], title[81], body[1601], source[201], status[33];
+    char handoff[321], steps[3][81];
+    int progress;
+    bool has_progress;
     struct { char label[25], action[16]; } buttons[3];
 } muse_card_t;
 typedef bool (*muse_card_action_fn)(const char *id, const char *action);
@@ -19,3 +22,5 @@ void muse_cards_invalidate_memories(void);
 void muse_cards_tick(void);
 void muse_cards_show(bool show);
 void muse_cards_demo(void);
+/* Snapshot builds only, with the display lock held: exercise visible controls. */
+bool muse_cards_bench_action(const char *name);

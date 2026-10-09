@@ -97,7 +97,7 @@ class Lessons:
             title = f"Question {index + 1} of {len(lesson.questions)}"
             body = question.prompt + '\n\n' + '\n'.join(f"{'ABC'[i]}. {choice}" for i,choice in enumerate(question.choices))
             buttons = [Button(id=identity,label=label,action='choice_'+label.lower()) for label in 'ABC']
-        return Card(id=card_id,kind='lesson',title=short(title,80),body=short(body,1550),source=clock,status=session['state'],buttons=buttons)
+        return Card(id=card_id,kind='lesson',title=short(title,80),body=short(body,1550),source=clock,status=session['state'],buttons=buttons,progress=100 if session['state']=='completed' else round(100*position/(len(lesson.steps)+len(lesson.questions))))
 
     def action(self, identity, action):
         task_id = identity.removeprefix('study:')

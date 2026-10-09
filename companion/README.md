@@ -4,6 +4,18 @@ A private backend and phone web interface for the round Waveshare Muse. The
 device handles touch, microphone capture, native cards and speaker playback.
 The backend owns memories, reminders, tools, recordings and ongoing work.
 
+## AI Studio upgrade
+
+The [20-feature implementation ledger](docs/STUDIO_ROADMAP.md) records the current
+upgrade and its verified limits. It adds project/person context, semantic memory,
+Studio briefs and reviewable workflows, segmented device notebooks, durable
+offline actions, power profiles, account OAuth and a PostgreSQL-backed Replit app.
+See [private Replit deployment](docs/REPLIT_DEPLOYMENT.md) for setup and recovery.
+Production publishing and live account grants are still being completed.
+
+The October 8 LAN service notes below are historical: that service directory is
+not present on this host at the October 9 check. Do not assume it is running.
+
 ## Start here
 
 ```sh

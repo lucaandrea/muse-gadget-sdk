@@ -27,9 +27,14 @@ def provision(board, data):
         raise BoardError("Invalid device credential")
     if len(ca.encode()) > 4096:
         raise BoardError("CA certificate must fit 4096 bytes")
+    access = data.get("external_access_token", "")
+    if len(access) > 2048 or any(ord(c) < 33 or ord(c) > 126 for c in access):
+        raise BoardError("Invalid private-app access credential")
     # Set URL last: partially written setup will not enable the companion.
     commands = ["pocket.url=", "pocket.token=" + token, "pocket.ca="]
     commands += ["pocket.ca+=" + ca[i:i+300].replace("\n", "\\n") for i in range(0, len(ca), 300)]
+    commands.append("pocket.access=")
+    commands += ["pocket.access+=" + access[i:i+300] for i in range(0, len(access), 300)]
     commands.append("pocket.url=" + url)
     for command in commands:
         board.write_line(command)

@@ -6,7 +6,7 @@ import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 from zoneinfo import ZoneInfo
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlparse
 
 
 def grep_access_token(value: str) -> str:
@@ -39,6 +39,10 @@ def read_env(path: Path) -> dict[str, str]:
 class Settings:
     data_dir: Path = field(default_factory=lambda: Path("data"))
     api_key: str = field(default="", repr=False)
+    database_url: str = field(default="", repr=False)
+    owner_token: str = field(default="", repr=False)
+    hosted: bool = False
+    public_url: str = ""
     grep_external_token: str = field(default="", repr=False)
     grep_model: str = "gpt-6.1-sol"
     model: str = "gpt-6.1-sol"
@@ -56,6 +60,7 @@ class Settings:
     decisions_enabled: bool = False
     integrations_file: Path | None = None
     integration_credentials: dict[str, str] = field(default_factory=dict, repr=False)
+    work_oauth: dict[str, dict[str, str]] = field(default_factory=dict, repr=False)
 
     @classmethod
     def load(cls, env_path: Path | None = None) -> Settings:
@@ -63,6 +68,12 @@ class Settings:
         result = cls(
             data_dir=Path(env.get("MUSE_DATA_DIR", "data")).resolve(),
             api_key=env.get("OPENAI_API_KEY", ""),
+            database_url=env.get("DATABASE_URL", ""),
+            owner_token=env.get("MUSE_OWNER_TOKEN", ""),
+            work_oauth={name: {"client_id": env.get(prefix + "_CLIENT_ID", ""), "client_secret": env.get(prefix + "_CLIENT_SECRET", "")}
+                        for name, prefix in (("slack", "SLACK"), ("linear", "LINEAR"), ("google_calendar", "GOOGLE"))},
+            hosted=env.get("MUSE_HOSTED", "0") == "1",
+            public_url=env.get("MUSE_PUBLIC_URL", "").rstrip("/"),
             grep_external_token=grep_access_token(env.get("GREP_EXTERNAL_ACCESS_TOKEN", "")),
             grep_model=env.get("GREP_ANSWER_MODEL", "gpt-6.1-sol"),
             model=env.get("MUSE_MODEL", "gpt-6.1-sol"),
@@ -74,6 +85,13 @@ class Settings:
             integrations_file=Path(env["MUSE_INTEGRATIONS"]).resolve() if env.get("MUSE_INTEGRATIONS") else None,
         )
         ZoneInfo(result.timezone)
+        if result.public_url:
+            url = urlparse(result.public_url)
+            local = url.scheme == "http" and url.hostname in ("localhost", "127.0.0.1")
+            if (url.scheme != "https" and not local) or not url.hostname or url.username or url.password or url.path or url.query or url.fragment:
+                raise ValueError("MUSE_PUBLIC_URL must be an HTTPS origin, or a localhost HTTP origin for development")
+        if result.hosted and (not result.database_url or len(result.owner_token) < 32):
+            raise ValueError("Hosted mode requires DATABASE_URL and a stable MUSE_OWNER_TOKEN of at least 32 characters")
         if not 10 <= result.live_max_seconds <= 1800 or result.daily_live_minutes < 1 or result.daily_model_calls < 1:
             raise ValueError("Invalid usage limits")
         result.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)

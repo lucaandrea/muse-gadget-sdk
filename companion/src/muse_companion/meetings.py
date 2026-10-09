@@ -51,6 +51,8 @@ def mount_meetings(app, store, provider, owner):
                 raise HTTPException(404, "Meeting not found")
             if task["state"] != "recording":
                 return {"ok": True, "state": task["state"]}
+            if json.loads(task["payload"]).get("device_notebook"):
+                raise Conflict("Finish this notebook on the device so every saved segment is included")
             segments = store.rows("SELECT * FROM meeting_segments WHERE meeting=? ORDER BY position", (meeting,))
             if not segments:
                 raise ValueError("Record at least one segment")

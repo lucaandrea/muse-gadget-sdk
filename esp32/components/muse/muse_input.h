@@ -48,3 +48,6 @@ esp_err_t muse_input_start(QueueHandle_t queue);
 
 /* Plays the goodbye animation and powers off (from the input task). */
 void muse_input_request_power_off(void);
+
+/* Explicit on-screen recording control; same queue as the physical button. */
+bool muse_input_request_talk(void);

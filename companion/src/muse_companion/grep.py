@@ -10,6 +10,7 @@ from pathlib import Path
 from uuid import UUID, uuid5, NAMESPACE_URL
 
 import httpx
+from .vault import Vault
 
 ORIGIN = "https://grep.live"
 CALLBACK = "http://127.0.0.1:8766/grep/callback"
@@ -44,10 +45,26 @@ class Grep:
     def __init__(self, settings, store, *, transport=None):
         self.settings, self.store, self.transport = settings, store, transport
         self.auth_path = settings.data_dir / "grep-auth.json"
+        self.vault = Vault(settings, store, "grep")
+
+    def import_auth(self, data):
+        if data.get("integration") != "muse" or not re.fullmatch(r"[a-f0-9]{64}", data.get("token", "")):
+            raise GrepError("Only a restricted Muse session from grep-connect can be imported")
+        expiry = float(data.get("expires_at", 0))
+        if not time.time() < expiry <= time.time() + 604800:
+            raise GrepError("The Grep session is expired or has an invalid lifetime. Reconnect Grep")
+        self.vault.write("session", {"integration": "muse", "token": data["token"], "expires_at": expiry})
 
     def auth(self):
         try:
-            data = json.loads(self.auth_path.read_text())
+            data = self.vault.read("session")
+            if not data:
+                data = json.loads(self.auth_path.read_text())
+                # Convert legacy local sessions when an encryption key exists.
+                # Keep the original private file until the durable write succeeds.
+                if self.settings.owner_token or (self.settings.data_dir / "owner-token").exists():
+                    self.import_auth(data)
+                    self.auth_path.unlink(missing_ok=True)
             if data.get("integration") != "muse" or not re.fullmatch(r"[a-f0-9]{64}", data.get("token", "")):
                 return None
             return data if float(data.get("expires_at", 0)) > time.time() else None
@@ -59,7 +76,7 @@ class Grep:
         return {"configured": bool(self.settings.grep_external_token), "authorized": bool(data),
                 "expires_at": data["expires_at"] if data else None,
                 "capabilities": ["search", "sources", "connections", "reports", "replit_read"],
-                "note": "Employee login required: run muse-companion grep-connect." if not data else "Read access; server checks employee permissions on every request."}
+                "note": "Run muse-companion grep-connect on your Mac, then import its restricted session in Tools if this companion is hosted." if not data else "Read access; server checks employee permissions on every request."}
 
     async def request(self, method, path, payload=None, *, params=None):
         # Callers provide only constant paths. Never follow a deployment/login redirect.
@@ -173,6 +190,7 @@ class Grep:
         if self.auth():
             await self.request("POST", "/api/logout", {})
         self.auth_path.unlink(missing_ok=True)
+        self.vault.write("session", None)
         self.store.set_setting("grep_chat_id", None)
         return {"ok": True}
 
