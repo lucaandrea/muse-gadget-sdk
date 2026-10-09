@@ -1,8 +1,13 @@
 #include "muse_refined_ui.h"
+#if CONFIG_MUSE_POCKET
+#include "muse_cards.h"
+#include "muse_pocket.h"
+#endif
 #include "muse_character.h"
 #include "muse_theme.h"
 #include "muse_reply.h"
 #include "muse_reading.h"
+#include "muse_markdown.h"
 #include "muse_presentation.h"
 #include "muse_settings.h"
 #include "muse_wifi.h"
@@ -22,12 +27,19 @@ static float s_scale, s_reveal, s_next_text;
 static float s_move_at, s_last_tick = -1;
 static int s_target_size = -1, s_target_y, s_from_size, s_from_y;
 static char *s_text;
+static muse_markdown_t *s_markdown;
+static char s_shown[1024];
+static uint8_t s_shown_styles[1024];
+LV_FONT_DECLARE(muse_font_bold_20)
+LV_FONT_DECLARE(muse_font_italic_20)
+LV_FONT_DECLARE(muse_font_bold_italic_20)
 static char s_caption[MUSE_CAPTION_MAX];
 static uint32_t s_caption_version;
 static muse_reply_info_t s_reply;
 static muse_presentation_t s_view;
 static muse_reading_page_t s_page;
 static size_t s_manual_byte;
+static int s_manual_page = -1;
 static int s_body_width, s_lines;
 static bool s_hold;
 static int px(int n) { return (int)(n*s_scale + .5f); }
@@ -37,7 +49,79 @@ static void place(lv_obj_t *o, int x, int y, int w, int h)
     lv_obj_set_size(o, px(w), px(h));
     lv_obj_set_pos(o, (s_w-px(466))/2+px(x), (s_h-px(466))/2+px(y));
 }
-static int glyph(uint32_t cp, void *font) { return lv_font_get_glyph_width(font, cp, 0); }
+static const lv_font_t *markdown_font(uint8_t flags)
+{
+    static lv_font_t fonts[4];
+    static lv_font_t mono;
+    if (!fonts[1].get_glyph_dsc) {
+        fonts[1] = muse_font_bold_20;
+        fonts[2] = muse_font_italic_20;
+        fonts[3] = muse_font_bold_italic_20;
+        for (int i = 1; i < 4; i++) fonts[i].fallback = muse_body_font();
+        mono = lv_font_unscii_16; mono.fallback = muse_body_font();
+    }
+    if (flags & MUSE_MD_CODE) return &mono;
+    int i = flags & (MUSE_MD_BOLD | MUSE_MD_ITALIC);
+    return i ? &fonts[i] : muse_body_font();
+}
+static int glyph(uint32_t cp, uint8_t style, void *context)
+{
+    (void)context;
+    return lv_font_get_glyph_width(markdown_font(style), cp, 0);
+}
+static int line_height(void)
+{
+    int h = lv_font_get_line_height(muse_body_font());
+    for (int i = 1; i <= 3; i++) h = LV_MAX(h, lv_font_get_line_height(markdown_font(i)));
+    return h + 3;
+}
+static void render_body(const char *text, const uint8_t *styles)
+{
+    size_t length = strlen(text);
+    if (!strcmp(s_shown, text) && !memcmp(s_shown_styles, styles, length)) return;
+    memcpy(s_shown, text, length + 1);
+    memcpy(s_shown_styles, styles, length);
+    lv_obj_clean(s_body);
+    int row = 0;
+    for (size_t p = 0; p < length; row++) {
+        size_t end = p;
+        while (end < length && text[end] != '\n') end++;
+        lv_obj_t *group = lv_spangroup_create(s_body);
+        lv_obj_remove_flag(group, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_text_font(group, muse_body_font(), 0);
+        lv_obj_set_style_text_line_space(group, 0, 0);
+        bool quote = styles[p] & MUSE_MD_QUOTE;
+        lv_obj_set_pos(group, quote ? 6 : 0, row * line_height());
+        lv_obj_set_size(group, s_body_width - 8, line_height());
+        lv_spangroup_set_mode(group, LV_SPAN_MODE_FIXED);
+        lv_spangroup_set_overflow(group, LV_SPAN_OVERFLOW_CLIP);
+        if (quote) {
+            lv_obj_set_style_border_side(group, LV_BORDER_SIDE_LEFT, 0);
+            lv_obj_set_style_border_width(group, 2, 0);
+            lv_obj_set_style_border_color(group, lv_color_hex(MUSE_ORANGE), 0);
+            lv_obj_set_style_pad_left(group, 5, 0);
+        }
+        while (p < end) {
+            size_t next = p + 1;
+            while (next < end && styles[next] == styles[p]) next++;
+            char run[1024];
+            memcpy(run, text + p, next - p); run[next - p] = 0;
+            lv_span_t *span = lv_spangroup_new_span(group);
+            lv_span_set_text(span, run);
+            lv_style_set_text_font(lv_span_get_style(span), markdown_font(styles[p]));
+            uint32_t color = styles[p] & MUSE_MD_LINK ? 0xb8310b :
+                styles[p] & MUSE_MD_QUOTE ? MUSE_PAPER_MUTED :
+                styles[p] & MUSE_MD_CODE ? 0x67452e : MUSE_INK;
+            lv_style_set_text_color(lv_span_get_style(span), lv_color_hex(color));
+            lv_style_set_text_decor(lv_span_get_style(span),
+                (styles[p] & MUSE_MD_STRIKE ? LV_TEXT_DECOR_STRIKETHROUGH : 0) |
+                (styles[p] & MUSE_MD_LINK ? LV_TEXT_DECOR_UNDERLINE : 0));
+            p = next;
+        }
+        lv_spangroup_refresh(group);
+        p = end + (end < length);
+    }
+}
 
 static void on_pet(lv_event_t *e) { (void)e; muse_state_make_happy(); muse_state_poke(); }
 static void on_speaker(lv_event_t *e)
@@ -72,9 +156,10 @@ static void on_page(lv_event_t *e)
 {
     int delta = (int)(intptr_t)lv_event_get_user_data(e);
     char page[1024];
-    muse_reading_page_t p = muse_reading_page(s_text, s_body_width, s_lines, 0,
-        s_page.page + delta, glyph, (void *)muse_body_font(), page, sizeof(page));
-    s_view.manual = true; s_manual_byte = p.start; s_next_text = 0; muse_state_poke();
+    muse_reading_page_t p = muse_markdown_page(s_markdown, s_body_width - 20, s_lines, 0,
+        s_page.page + delta, glyph, NULL, page, NULL, sizeof(page));
+    s_view.manual = true; s_manual_byte = p.start; s_manual_page = p.page;
+    s_next_text = 0; muse_state_poke();
 }
 static lv_obj_t *control(lv_obj_t *p, const char *text, int w, lv_event_cb_t cb, void *user)
 {
@@ -90,9 +175,12 @@ bool muse_refined_build(lv_obj_t *parent, int width, int height)
 {
     s_w = width; s_h = height; s_scale = LV_MIN(width, height)/466.f;
     s_text = heap_caps_calloc(1, MUSE_REPLY_MAX, MUSE_BIG_CAPS);
-    if (!s_text || !muse_reply_init()) { heap_caps_free(s_text); return false; }
+    s_markdown = heap_caps_calloc(1, sizeof(*s_markdown), MUSE_BIG_CAPS);
+    if (!s_text || !s_markdown || !muse_reply_init()) {
+        heap_caps_free(s_text); heap_caps_free(s_markdown); return false;
+    }
     s_character = muse_character_create(parent);
-    if (!s_character) { heap_caps_free(s_text); return false; }
+    if (!s_character) { heap_caps_free(s_text); heap_caps_free(s_markdown); return false; }
     lv_obj_add_flag(s_character, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(s_character, on_pet, LV_EVENT_CLICKED, NULL);
     s_title = muse_label(parent, &lv_font_montserrat_20, MUSE_CREAM, "Muse");
@@ -126,8 +214,8 @@ bool muse_refined_build(lv_obj_t *parent, int width, int height)
     lv_obj_add_event_cb(s_card, on_read, LV_EVENT_CLICKED, NULL);
     s_card_title = muse_label(s_card, &lv_font_montserrat_14, MUSE_PAPER_MUTED, "FROM MUSE");
     lv_obj_set_pos(s_card_title, px(20), px(17));
-    s_body = muse_label(s_card, muse_body_font(), MUSE_INK, "");
-    lv_obj_set_style_text_line_space(s_body, 3, 0);
+    s_body = lv_obj_create(s_card); lv_obj_remove_style_all(s_body);
+    lv_obj_remove_flag(s_body, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_pos(s_body, px(20), px(46));
     s_page_label = muse_label(s_card, &lv_font_montserrat_14, MUSE_PAPER_MUTED, "");
     lv_obj_align(s_page_label, LV_ALIGN_BOTTOM_LEFT, px(20), -px(14));
@@ -150,16 +238,20 @@ static void layout(bool answer, bool reading)
 {
     int state = reading ? 2 : answer ? 1 : 0;
     if (state == s_layout) return;
-    s_layout = state; s_next_text = 0;
+    s_layout = state; s_next_text = 0; s_manual_page = -1;
     hidden(s_card, !answer); hidden(s_hint, reading); hidden(s_nav, !reading);
     hidden(s_foot, reading); hidden(s_follow, !reading);
     hidden(s_speaker, reading);
+#if CONFIG_MUSE_POCKET
+    muse_cards_chrome_visible(!reading);
+#endif
     if (answer) {
         place(s_card, reading ? 65 : 73, reading ? 103 : 184, reading ? 336 : 320, reading ? 251 : 158);
         s_body_width = px(reading ? 296 : 280);
         int height = px(reading ? 168 : 78);
-        s_lines = LV_MAX(1, height / (lv_font_get_line_height(muse_body_font()) + 3));
+        s_lines = LV_MAX(1, height / line_height());
         lv_obj_set_width(s_body, s_body_width); lv_obj_set_height(s_body, height);
+        s_shown[0] = 0;
     }
 }
 
@@ -169,7 +261,9 @@ void muse_refined_tick(muse_mode_t mode, float now, float level)
     bool returning = s_last_tick >= 0 && now - s_last_tick > 1;
     s_last_tick = now;
     muse_state_caption(s_caption, sizeof(s_caption), &s_caption_version);
-    muse_reply_sync(s_text, MUSE_REPLY_MAX, &s_reply);
+    if (muse_reply_sync(s_text, MUSE_REPLY_MAX, &s_reply)) {
+        muse_markdown_parse(s_markdown, s_text); s_next_text = 0; s_manual_page = -1;
+    }
     if (muse_presentation_update(&s_view, s_reply.turn, s_reply.length > 0)) s_reveal = now;
     bool answer = s_view.answer, reading = answer && s_view.reading;
     layout(answer, reading);
@@ -179,8 +273,15 @@ void muse_refined_tick(muse_mode_t mode, float now, float level)
     lv_obj_set_style_text_color(s_speaker_icon, lv_color_hex(muse_settings_speaker_on() ? MUSE_CREAM : MUSE_ORANGE), 0);
     muse_wifi_status_t wifi; muse_wifi_status(&wifi);
     muse_hatch_status_t chat; muse_hatch_status(&chat);
-    bool setup = chat.state == MUSE_HATCH_NOT_SET;
-    bool offline = wifi.state != MUSE_WIFI_CONNECTED;
+    bool pocket = false, companion_offline = false;
+    int queued = 0;
+#if CONFIG_MUSE_POCKET
+    pocket = muse_pocket_enabled();
+    companion_offline = pocket && !muse_pocket_connected();
+    queued = pocket ? muse_pocket_queued() : 0;
+#endif
+    bool setup = !pocket && chat.state == MUSE_HATCH_NOT_SET;
+    bool offline = wifi.state != MUSE_WIFI_CONNECTED || companion_offline;
     bool active = mode == MUSE_MODE_LISTENING || mode == MUSE_MODE_THINKING;
     bool notice = !reading && (mode == MUSE_MODE_ERROR || (!answer && (setup || offline)));
     lv_obj_align(s_notice, LV_ALIGN_TOP_MID, 0, px(answer ? 103 : 278));
@@ -190,12 +291,20 @@ void muse_refined_tick(muse_mode_t mode, float now, float level)
     else if (mode == MUSE_MODE_THINKING) snprintf(hint, sizeof(hint), "A moment, please");
     else if (answer) snprintf(hint, sizeof(hint), "Done");
     else if (setup) snprintf(hint, sizeof(hint), "Connect in the Muse app");
+    else if (offline && pocket) snprintf(hint, sizeof(hint), "Hold %s to save offline", muse_board->talk_button);
     else if (offline) snprintf(hint, sizeof(hint), "Swipe left for Wi-Fi");
     else snprintf(hint, sizeof(hint), "Hold %s to talk", muse_board->talk_button);
     muse_label_update(s_hint_text, hint);
-    if (notice) muse_label_update(s_notice, mode == MUSE_MODE_ERROR && s_caption[0] ? s_caption :
-        setup ? "Let's get acquainted.\nPair Muse with your phone." :
-        wifi.state == MUSE_WIFI_CONNECTING ? "Reconnecting to Wi-Fi..." : "You're offline.\nCheck your Wi-Fi in Settings.");
+    if (notice) {
+        char saved[80];
+        snprintf(saved, sizeof(saved), "%d capture%s saved.\nWill send when connected.", queued, queued == 1 ? "" : "s");
+        muse_label_update(s_notice, mode == MUSE_MODE_ERROR && s_caption[0] ? s_caption :
+            setup ? "Let's get acquainted.\nPair Muse with your phone." :
+            queued > 0 ? saved :
+            wifi.state == MUSE_WIFI_CONNECTING ? "Reconnecting to Wi-Fi..." :
+            wifi.state != MUSE_WIFI_CONNECTED ? "You're offline.\nCheck your Wi-Fi in Settings." :
+            companion_offline ? "Companion is offline.\nKeep your Mac awake and connected." : "Please try again.");
+    }
     muse_power_t power = muse_state_power();
     muse_label_update(s_foot, power.battery_pct >= 0 && power.battery_pct <= 15 && !power.charging ? "Low battery - Connect power" : "Swipe left for settings");
     float reveal = reduced ? 1 : LV_CLAMP(0.f, (now-s_reveal)/.28f, 1.f);
@@ -211,7 +320,8 @@ void muse_refined_tick(muse_mode_t mode, float now, float level)
     float settle = 1 - (1-move)*(1-move)*(1-move);
     int size = s_from_size + (int)((s_target_size-s_from_size)*settle);
     int y = s_from_y + (int)((s_target_y-s_from_y)*settle);
-    if (!reduced && move >= 1 && !answer && !notice && mode == MUSE_MODE_IDLE) y += (int)(sinf(now*1.4f)*2);
+    if (!reduced && move >= 1 && !answer && mode != MUSE_MODE_OFF)
+        y += (int)roundf(sinf(now * (mode == MUSE_MODE_THINKING ? 2.f : 1.4f)) * px(4));
     hidden(s_character, reading || (answer && notice));
     if (!reading && !(answer && notice)) {
         muse_character_update(mode, now, level, muse_state_happiness() > .1f, quiet, reduced, size);
@@ -229,10 +339,14 @@ void muse_refined_tick(muse_mode_t mode, float now, float level)
     }
     if (answer && now >= s_next_text) {
         s_next_text = now + .1f;
-        char body[1024], footer[80];
-        s_page = muse_reading_page(s_text, s_body_width, s_lines,
-            s_view.manual ? s_manual_byte : s_reply.offset, -1, glyph, (void *)muse_body_font(), body, sizeof(body));
-        muse_label_update(s_body, body);
+        char body[1024], footer[80]; uint8_t styles[1024];
+        s_page = muse_markdown_page(s_markdown, s_body_width - 20, s_lines,
+            s_view.manual ? s_manual_byte : s_reply.offset, s_view.manual ? s_manual_page : -1,
+            glyph, NULL, body, styles, sizeof(body));
+        /* Generated table labels may share a source byte. Once explicitly
+         * selected, hold the actual page instead of following that byte. */
+        if (s_view.manual) s_manual_page = s_page.page;
+        render_body(body, styles);
         snprintf(footer, sizeof(footer), reading ? "%d / %d" : "%d / %d    Tap to read", s_page.page+1, s_page.pages);
         muse_label_update(s_page_label, footer);
         muse_label_update(s_follow_text, s_view.manual ? "Follow voice" : "Following");
@@ -243,6 +357,19 @@ void muse_refined_tick(muse_mode_t mode, float now, float level)
 
 bool muse_refined_preview(const char *name)
 {
+#if LV_USE_SNAPSHOT
+    if (!strcmp(name, "markdown")) {
+        muse_reply_new_turn();
+        muse_reply_publish("# Small steps\n\n**Begin here** with *one breath*.\n\n"
+            "- Notice the light\n- Take a short walk\n\n> A little space helps.\n\n"
+            "\x60\x60\x60python\nprint('hello')\n\x60\x60\x60\n\n"
+            "| Plan | Time |\n|---|---|\n| Walk | 5 min |\n\n"
+            "[Read more](https://example.com)\n\n世界很大。", 0);
+        muse_state_set_mode(MUSE_MODE_IDLE);
+        s_layout = -1; s_next_text = 0;
+        return true;
+    }
+#endif
     if (!strcmp(name, "reading")) { s_view.reading = true; s_view.manual = true; s_manual_byte = s_page.start; }
     else if (!strcmp(name, "quiet")) { muse_settings_set_character(false); s_view.reading = false; }
     else if (!strcmp(name, "companion")) { muse_settings_set_character(true); s_view.reading = false; }
@@ -257,6 +384,7 @@ bool muse_refined_check(const char *property, int expected)
     if (!strcmp(property, "reading")) return s_view.reading == expected;
     if (!strcmp(property, "manual")) return s_view.manual == expected;
     if (!strcmp(property, "page")) return s_page.page == expected;
+    if (!strcmp(property, "markdown")) return (s_markdown && !s_markdown->fallback) == expected;
     return false;
 }
 #endif

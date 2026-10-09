@@ -466,6 +466,89 @@
         }
       }
     },
+    "/api/tasks/{item_id}/control": {
+      "post": {
+        "summary": "Control Work",
+        "operationId": "control_work_api_tasks__item_id__control_post",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkControlIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/interpreter": {
+      "post": {
+        "summary": "Start Interpreter",
+        "operationId": "start_interpreter_api_interpreter_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InterpreterIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/items/{item_id}/action": {
       "post": {
         "summary": "Action",
@@ -1219,7 +1302,17 @@
               "snooze",
               "approve",
               "reject",
-              "dismiss"
+              "dismiss",
+              "cancel",
+              "language_a",
+              "language_b",
+              "end_interpret",
+              "study",
+              "study_next",
+              "study_end",
+              "choice_a",
+              "choice_b",
+              "choice_c"
             ],
             "title": "Action"
           },
@@ -1322,6 +1415,35 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "InterpreterIn": {
+        "properties": {
+          "mine": {
+            "type": "string",
+            "maxLength": 2,
+            "minLength": 2,
+            "title": "Mine"
+          },
+          "theirs": {
+            "type": "string",
+            "maxLength": 2,
+            "minLength": 2,
+            "title": "Theirs"
+          },
+          "device_id": {
+            "type": "string",
+            "maxLength": 64,
+            "title": "Device Id",
+            "default": ""
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "mine",
+          "theirs"
+        ],
+        "title": "InterpreterIn"
       },
       "MemoryIn": {
         "properties": {
@@ -1456,6 +1578,37 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "WorkControlIn": {
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "steer",
+              "cancel"
+            ],
+            "title": "Action"
+          },
+          "instructions": {
+            "type": "string",
+            "maxLength": 12000,
+            "title": "Instructions",
+            "default": ""
+          },
+          "operation_id": {
+            "type": "string",
+            "maxLength": 96,
+            "minLength": 8,
+            "title": "Operation Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "action",
+          "operation_id"
+        ],
+        "title": "WorkControlIn"
       }
     }
   }

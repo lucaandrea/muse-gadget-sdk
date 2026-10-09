@@ -1,6 +1,7 @@
 #include "muse_cards.h"
 #include "muse_mem.h"
 #include "muse_state.h"
+#include "muse_theme.h"
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -14,7 +15,7 @@ static int s_count, s_selected;
 static unsigned s_version, s_drawn;
 static lv_obj_t *s_panel, *s_inbox, *s_title, *s_body, *s_source, *s_counter, *s_buttons[3];
 static muse_card_action_fn s_action;
-static bool s_visible;
+static bool s_visible, s_refined;
 
 bool muse_cards_init(void)
 {
@@ -95,55 +96,73 @@ static void action_cb(lv_event_t *e)
 static lv_obj_t *button(lv_obj_t *parent, const char *text, lv_event_cb_t callback, void *data)
 {
     lv_obj_t *b = lv_button_create(parent);
-    lv_obj_set_style_bg_color(b, lv_color_hex(0x214A40), 0);
-    lv_obj_set_style_radius(b, 18, 0);
+    lv_obj_remove_style_all(b);
+    muse_surface(b, false, 18);
+    lv_obj_remove_flag(b, LV_OBJ_FLAG_PRESS_LOCK | LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_pad_all(b, 8, 0);
     lv_obj_add_event_cb(b, callback, LV_EVENT_CLICKED, data);
-    lv_obj_t *label = lv_label_create(b); lv_label_set_text(label, text); lv_obj_center(label);
+    lv_obj_t *label = muse_label(b, &lv_font_montserrat_14, MUSE_CREAM, text); lv_obj_center(label);
     return b;
 }
-void muse_cards_build(lv_obj_t *parent, int width, int height, muse_card_action_fn action)
+void muse_cards_chrome_visible(bool visible)
+{
+    if (s_inbox) lv_obj_set_flag(s_inbox, LV_OBJ_FLAG_HIDDEN, !visible);
+}
+void muse_cards_build(lv_obj_t *parent, int width, int height, muse_card_action_fn action, bool refined)
 {
     if (!muse_cards_init()) return;
-    s_action = action;
+    s_action = action; s_refined = refined;
     s_inbox = button(parent, "Inbox", open_cb, NULL);
-    lv_obj_set_size(s_inbox, 90, 38); lv_obj_align(s_inbox, LV_ALIGN_TOP_MID, 0, 48);
+    if (refined) {
+        /* Opposite the touch speaker, clear of the title and the small reply
+         * character. Scale the entire hit target into the circular safe area. */
+        int scale = LV_MIN(width, height);
+        lv_obj_set_size(s_inbox, 52 * scale / 466, 52 * scale / 466);
+        lv_obj_set_pos(s_inbox, (width-scale)/2 + 326 * scale / 466,
+                       (height-scale)/2 + 72 * scale / 466);
+    } else {
+        lv_obj_set_size(s_inbox, 90, 38); lv_obj_align(s_inbox, LV_ALIGN_TOP_MID, 0, 78);
+    }
     s_panel = lv_obj_create(lv_screen_active());
     lv_obj_remove_flag(s_panel, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_size(s_panel, width, height); lv_obj_center(s_panel);
     lv_obj_set_style_bg_color(s_panel, lv_color_black(), 0);
     lv_obj_set_style_border_width(s_panel, 0, 0);
     lv_obj_set_style_pad_all(s_panel, 0, 0);
-    lv_obj_set_style_text_color(s_panel, lv_color_hex(0xF0F8F5), 0);
+    lv_obj_set_style_text_color(s_panel, lv_color_hex(MUSE_CREAM), 0);
+    lv_obj_set_style_text_font(s_panel, muse_body_font(), 0);
     lv_obj_t *close = button(s_panel, "Back", close_cb, NULL);
     lv_obj_set_size(close, 78, 38); lv_obj_align(close, LV_ALIGN_TOP_MID, -65, 44);
     lv_obj_t *next = button(s_panel, "Next", next_cb, NULL);
     lv_obj_set_size(next, 78, 38); lv_obj_align(next, LV_ALIGN_TOP_MID, 65, 44);
     s_counter = lv_label_create(s_panel); lv_obj_align(s_counter, LV_ALIGN_TOP_MID, 0, 91);
     s_title = lv_label_create(s_panel); lv_obj_set_width(s_title, width * 70 / 100);
+    lv_obj_set_height(s_title, 44); lv_label_set_long_mode(s_title, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(s_title, LV_TEXT_ALIGN_CENTER, 0); lv_obj_align(s_title, LV_ALIGN_TOP_MID, 0, 115);
     lv_obj_t *scroll = lv_obj_create(s_panel);
     lv_obj_set_size(scroll, width * 75 / 100, height - 309); lv_obj_align(scroll, LV_ALIGN_TOP_MID, 0, 165);
     lv_obj_set_style_bg_opa(scroll, LV_OPA_TRANSP, 0); lv_obj_set_style_border_width(scroll, 0, 0);
     lv_obj_set_style_pad_all(scroll, 2, 0);
     s_body = lv_label_create(scroll); lv_obj_set_width(s_body, LV_PCT(100));
-    lv_obj_set_style_text_color(s_body, lv_color_hex(0xE2ECE7), 0);
+    lv_obj_set_style_text_color(s_body, lv_color_hex(MUSE_CREAM), 0);
     s_source = lv_label_create(s_panel); lv_obj_set_width(s_source, width * 70 / 100);
     lv_label_set_long_mode(s_source, LV_LABEL_LONG_DOT);
-    lv_obj_set_style_text_align(s_source, LV_TEXT_ALIGN_CENTER, 0); lv_obj_align(s_source, LV_ALIGN_BOTTOM_MID, 0, -111);
+    lv_obj_set_style_text_color(s_source, lv_color_hex(MUSE_MUTED), 0);
+    lv_obj_set_style_text_align(s_source, LV_TEXT_ALIGN_CENTER, 0); lv_obj_align(s_source, LV_ALIGN_BOTTOM_MID, 0, -127);
     for (int i = 0; i < 3; ++i) {
         s_buttons[i] = button(s_panel, "", action_cb, (void *)(intptr_t)i);
         lv_obj_set_size(s_buttons[i], width / 5, 44);
-        lv_obj_align(s_buttons[i], LV_ALIGN_BOTTOM_MID, (i - 1) * (width / 5 + 6), -55);
+        lv_obj_align(s_buttons[i], LV_ALIGN_BOTTOM_MID, (i - 1) * (width / 5 + 6), -72);
     }
     muse_cards_show(false);
+    s_drawn = ~s_version;
 }
 void muse_cards_tick(void)
 {
     if (s_visible && muse_state_mode(NULL) == MUSE_MODE_LISTENING) muse_cards_show(false);
     if (!s_panel || s_drawn == s_version) return;
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    char counter[40]; snprintf(counter, sizeof(counter), "Inbox %d", s_count);
+    char counter[40]; snprintf(counter, sizeof(counter), s_refined ? LV_SYMBOL_LIST " %d" : "Inbox %d", s_count);
     lv_label_set_text(lv_obj_get_child(s_inbox, 0), counter);
     if (s_visible) {
         if (s_selected >= s_count) s_selected = 0;

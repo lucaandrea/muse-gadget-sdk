@@ -6,6 +6,8 @@
 void muse_pocket_init(void);
 void muse_pocket_start(void);
 bool muse_pocket_enabled(void);
+bool muse_pocket_connected(void);
+int muse_pocket_queued(void);
 bool muse_pocket_busy(void);
 bool muse_pocket_audio_pending(void);
 void muse_pocket_play_chunk(void);

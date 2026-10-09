@@ -1,0 +1,43 @@
+{
+  "date": "2026-10-08",
+  "board": "Waveshare ESP32-S3-Touch-AMOLED-1.75C",
+  "app_sha256": "fd9b613b06fc234ddb34bdb754ddeada3ef6c10e27156fd5942da3e9b2d8642f",
+  "app_bytes": 3543040,
+  "app_offset": "0x20000",
+  "app_flash_hash_verified": true,
+  "tests": {
+    "existing_host_suite": 228,
+    "new_connection_supervisor": 5
+  },
+  "wifi": {
+    "on": true,
+    "state": "not_nearby",
+    "ssid": "LucaGPT",
+    "ip": "",
+    "rssi": 0
+  },
+  "link": {
+    "paired": false,
+    "state": "Connecting"
+  },
+  "display": {
+    "character": true,
+    "animations": true
+  },
+  "pocket": {
+    "configured": true,
+    "connected": false,
+    "storage": true,
+    "busy": false,
+    "queued": 3,
+    "storage_used": 183481,
+    "recording_format": 2,
+    "internal_free": 27911,
+    "internal_largest": 16384
+  },
+  "pairing_result": "Unverified: waiting for a fresh phone app attempt after the update.",
+  "pre_update_observation": "Encrypted confirmation and wifi_scan completed; no provision_v2 before session timeout.",
+  "post_update_observation": "LucaGPT rejoined after application-only flash, then disconnected (reason 200) and was no longer visible. No new BLE setup command received during the four-minute observation window.",
+  "mac_companion": "Mac on office Wi-Fi; device configured for Mac local hostname, unreachable from LucaGPT.",
+  "monitor_seconds": 240
+}

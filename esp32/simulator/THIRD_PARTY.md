@@ -22,8 +22,12 @@ The simulator uses these upstream projects at build and runtime:
   under the MIT License.
 - [SDL 2.32.10](https://github.com/libsdl-org/SDL/releases/tag/release-2.32.10),
   licensed under the zlib License.
+- [MD4C 0.5.2](https://github.com/mity/md4c/tree/release-0.5.2), MIT,
+  vendored with the firmware under components/muse/vendor/md4c.
+- [Montserrat](https://github.com/JulietaUla/Montserrat), SIL Open Font
+  License, with generated reply fonts and the license under components/muse/fonts.
 
 CMake prefers a compatible system SDL2 package. It fetches the pinned LVGL
 archive by default so the simulator always uses its required fonts, drivers,
 and private APIs, and fetches SDL when no compatible package is installed.
-Their source is not vendored in this repository.
+LVGL and SDL source is not vendored in this repository.

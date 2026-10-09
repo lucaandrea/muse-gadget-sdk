@@ -2,10 +2,12 @@
 #include "muse_pocket_filename.h"
 #include "muse_audio.h"
 #include "muse_cards.h"
+#include "muse_ble.h"
 #include "muse_input.h"
 #include "muse_mem.h"
 #include "muse_settings.h"
 #include "muse_state.h"
+#include "muse_wifi.h"
 #include "cJSON.h"
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
@@ -30,6 +32,7 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+#include "muse_pocket_recording.h"
 
 #define FS "/pocket"
 #define NOTE_BYTES (16000 * 2 * 15)
@@ -37,7 +40,7 @@
 #define AUDIO_BYTES 65536
 #define RX_BYTES 32768
 typedef struct { int kind; char *data; size_t len; char id[65]; } work_t;
-enum { SAVE_NOTE, ACK_NOTE, CACHE_SYNC, SEND_ACTION, STORAGE_TEST };
+enum { SAVE_NOTE, ACK_NOTE, CACHE_SYNC, SEND_ACTION, STORAGE_TEST, SAVE_MODE };
 static const char *TAG = "pocket";
 static char s_url[257], s_token[129], *s_ca, s_headers[160];
 #define CA_BYTES 4097
@@ -49,8 +52,13 @@ static size_t s_audio_read, s_audio_size, s_rx_len, s_rx_expected;
 static int s_rx_opcode;
 static volatile bool s_connected, s_recording, s_inflight, s_ready, s_done, s_fs;
 static volatile bool s_restart_ws;
+static bool s_ws_started;
+static volatile bool s_setup_paused;
+static volatile bool s_announce;
+static char s_capture_language[3];
 static volatile uint32_t s_generation;
 static volatile uint32_t s_audio_received, s_audio_played, s_audio_errors;
+static volatile int s_queued;
 static volatile int64_t s_retry_at;
 static char s_note_id[65];
 static cJSON *s_reminders;
@@ -130,6 +138,19 @@ static void receive_json(const char *text)
     cJSON *epoch = cJSON_GetObjectItemCaseSensitive(o, "generation");
     bool current = !epoch || (uint32_t)epoch->valuedouble == s_generation;
     if (!strcmp(type, "card")) card_from_json(cJSON_GetObjectItem(o, "card"));
+    else if (!strcmp(type, "capture.mode")) {
+        const char *language = !strcmp(str(o, "mode"), "translate") ? str(o, "language") : "";
+        if (muse_recording_language(language)) {
+            xSemaphoreTake(s_audio_lock, portMAX_DELAY);
+            bool changed = strcmp(s_capture_language, language) != 0;
+            snprintf(s_capture_language, sizeof(s_capture_language), "%s", language);
+            xSemaphoreGive(s_audio_lock);
+            if (changed) {
+                work_t w = {.kind=SAVE_MODE, .data=strdup(language)};
+                if (!w.data || !xQueueSend(s_work, &w, 0)) free(w.data);
+            }
+        }
+    }
     else if (!strcmp(type, "card.remove")) muse_cards_remove(str(o, "id"));
     else if (!strcmp(type, "cards.reset")) muse_cards_clear();
     else if (!strcmp(type, "memory.invalidated")) muse_cards_invalidate_memories();
@@ -149,9 +170,14 @@ static void receive_json(const char *text)
         work_t w = {.kind=CACHE_SYNC, .data=copy};
         if (!copy || !xQueueSend(s_work, &w, 0)) free(copy);
     } else if (!strcmp(type, "action.result")) {
-        muse_cards_remove(str(o, "id")); muse_state_set_caption("Action confirmed");
+        cJSON *result = cJSON_GetObjectItemCaseSensitive(o, "result");
+        cJSON *card = cJSON_GetObjectItemCaseSensitive(result, "card");
+        if (!cJSON_IsObject(card) || strcmp(str(card, "id"), str(o, "id"))) muse_cards_remove(str(o, "id"));
+        if (cJSON_IsObject(card)) card_from_json(card);
+        muse_state_set_caption("Action confirmed");
     } else if (!strcmp(type, "error")) {
         muse_state_set_caption("%s", str(o, "text"));
+        muse_state_set_mode(MUSE_MODE_ERROR);
         s_inflight = false; s_done = true;
         s_retry_at = esp_timer_get_time() + 300000000; /* preserve the note; avoid an error/retry loop */
     }
@@ -178,7 +204,7 @@ static void ws_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg; (void)base;
     esp_websocket_event_data_t *d = data;
-    if (id == WEBSOCKET_EVENT_CONNECTED) { s_connected = true; s_retry_at = 0; ESP_LOGI(TAG, "companion connected"); }
+    if (id == WEBSOCKET_EVENT_CONNECTED) { s_connected = true; s_announce = true; s_retry_at = 0; ESP_LOGI(TAG, "companion connected"); }
     else if (id == WEBSOCKET_EVENT_DISCONNECTED || id == WEBSOCKET_EVENT_ERROR || id == WEBSOCKET_EVENT_CLOSED) {
         s_connected = false; s_ready = false; s_inflight = false; s_done = true; s_rx_len = 0;
         if (id == WEBSOCKET_EVENT_CLOSED) s_restart_ws = true;
@@ -197,12 +223,54 @@ static void ws_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         }
     }
 }
+
+/* The WebSocket owns an 8 KiB internal stack. The phone's provisioning worker
+ * needs another 8 KiB, which cannot be allocated beside BLE on this board.
+ * Stop the network task during phone setup; keep the storage worker and its
+ * durable captures alive. Only this worker starts/stops the WebSocket. */
+static void service_connection(void)
+{
+    if (!s_ws) return;
+    muse_ble_status_t ble;
+    muse_ble_status(&ble);
+    bool setup = ble.state == MUSE_BLE_CONNECTED;
+    bool allowed = !setup && muse_wifi_connected();
+    if (setup != s_setup_paused) {
+        s_setup_paused = setup;
+        ESP_LOGI(TAG, "%s", setup ? "pausing companion for phone setup" : "phone setup ended; companion may resume");
+    }
+    if (!allowed) {
+        if (s_ws_started) {
+            esp_websocket_client_stop(s_ws);
+            s_ws_started = false;
+            s_connected = false; s_ready = false; s_inflight = false; s_done = true;
+            s_rx_len = 0;
+        }
+        s_restart_ws = false;
+        return;
+    }
+    if (s_restart_ws) {
+        /* A graceful server close ends the IDF task; transport failures retry
+         * inside it. Stop also waits for the previous task to finish. */
+        esp_websocket_client_stop(s_ws);
+        /* CLOSED is emitted just before the IDF task finishes cleanup. Its
+         * run flag may already be false, so stop can return without waiting. */
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        s_ws_started = false;
+        s_restart_ws = false;
+    }
+    if (!s_ws_started)
+        s_ws_started = esp_websocket_client_start(s_ws) == ESP_OK;
+}
 static void load_nvs(void)
 {
     nvs_handle_t n; if (nvs_open("muse_pocket", NVS_READONLY, &n) != ESP_OK) return;
     size_t len = sizeof(s_url); nvs_get_str(n, "url", s_url, &len);
     len = sizeof(s_token); nvs_get_str(n, "token", s_token, &len);
-    len = CA_BYTES; nvs_get_str(n, "ca", s_ca, &len); nvs_close(n);
+    len = CA_BYTES; nvs_get_str(n, "ca", s_ca, &len);
+    len = sizeof(s_capture_language); nvs_get_str(n, "interp_lang", s_capture_language, &len);
+    if (!muse_recording_language(s_capture_language)) s_capture_language[0] = 0;
+    nvs_close(n);
 }
 void muse_pocket_init(void)
 {
@@ -214,6 +282,8 @@ void muse_pocket_init(void)
     if (!s_audio || !s_rx || !s_work || !s_send || !s_audio_lock) { s_url[0] = 0; ESP_LOGE(TAG, "out of memory"); }
 }
 bool muse_pocket_enabled(void) { return !strncmp(s_url, "wss://", 6) && s_token[0]; }
+bool muse_pocket_connected(void) { return s_connected; }
+int muse_pocket_queued(void) { return s_queued; }
 bool muse_pocket_busy(void) { return s_recording || s_inflight || muse_pocket_audio_pending(); }
 bool muse_pocket_audio_pending(void) { return s_audio_size > 0; }
 void muse_pocket_play_chunk(void)
@@ -242,9 +312,14 @@ void muse_pocket_record(QueueHandle_t input)
 {
     s_recording = true; s_generation++; s_inflight = false; s_done = false; clear_audio();
     if (s_connected) send_json(event("voice.cancel"));
-    unsigned char *pcm = heap_caps_malloc(NOTE_BYTES, MUSE_BIG_CAPS);
-    if (!pcm) { s_recording = false; muse_state_set_caption("Not enough memory to record"); return; }
-    size_t used = 0; muse_state_set_mode(MUSE_MODE_LISTENING); muse_state_set_caption("Listening · release to save");
+    unsigned char *buffer = heap_caps_malloc(NOTE_BYTES + MUSE_RECORDING_HEADER_SIZE, MUSE_BIG_CAPS);
+    if (!buffer) { s_recording = false; muse_state_set_caption("Not enough memory to record"); return; }
+    unsigned char *pcm = buffer + MUSE_RECORDING_HEADER_SIZE;
+    char language[3];
+    xSemaphoreTake(s_audio_lock, portMAX_DELAY); memcpy(language, s_capture_language, sizeof(language)); xSemaphoreGive(s_audio_lock);
+    size_t used = 0; muse_state_set_mode(MUSE_MODE_LISTENING);
+    if (language[0]) muse_state_set_caption("Translate to %s · release to hear", language);
+    else muse_state_set_caption("Listening · release to save");
     while (used + MUSE_AUDIO_CHUNK * 2 <= NOTE_BYTES) {
         muse_input_event_t e;
         if (xQueueReceive(input, &e, 0) && e.type == MUSE_PTT_UP) break;
@@ -253,9 +328,9 @@ void muse_pocket_record(QueueHandle_t input)
         used += MUSE_AUDIO_CHUNK * 2; muse_state_set_progress((float)used / NOTE_BYTES);
     }
     s_recording = false; muse_state_set_level(0); muse_state_set_progress(0); muse_state_set_mode(MUSE_MODE_IDLE);
-    if (used < 16000 / 2) { free(pcm); muse_state_set_caption("Hold longer to talk"); return; }
-    work_t w = {.kind=SAVE_NOTE, .data=(char *)pcm, .len=used}; random_id(w.id);
-    if (!xQueueSend(s_work, &w, 0)) { free(pcm); muse_state_set_caption("Queue busy · capture was not saved"); }
+    if (used < 16000 / 2 || !muse_recording_encode(buffer, language, used)) { free(buffer); muse_state_set_caption("Hold longer to talk"); return; }
+    work_t w = {.kind=SAVE_NOTE, .data=(char *)buffer, .len=used + MUSE_RECORDING_HEADER_SIZE}; random_id(w.id);
+    if (!xQueueSend(s_work, &w, 0)) { free(buffer); muse_state_set_caption("Queue busy · capture was not saved"); }
     else muse_state_set_caption("Saving your capture...");
 }
 static int notes(char first[65])
@@ -349,10 +424,19 @@ static void upload_note(const char *id)
 {
     char path[100]; if (!note_path(id, path)) return;
     FILE *f = fopen(path, "rb"); if (!f) return;
+    uint8_t header[MUSE_RECORDING_HEADER_SIZE]; char language[3];
+    fseek(f, 0, SEEK_END); long file_size = ftell(f); rewind(f);
+    size_t read = fread(header, 1, sizeof(header), f);
+    int format = muse_recording_decode(header, read, file_size > 0 ? (size_t)file_size : 0, language);
+    if (format < 0 || file_size <= 0) {
+        fclose(f); muse_state_set_caption("Saved capture damaged - not sent");
+        s_retry_at = esp_timer_get_time() + 300000000; return;
+    }
+    if (!format) rewind(f);
     s_generation++; s_ready = false; s_done = false; s_inflight = true;
     snprintf(s_note_id, sizeof(s_note_id), "%s", id);
     uint32_t epoch = s_generation;
-    cJSON *o = event("voice.begin"); cJSON_AddStringToObject(o, "id", id); cJSON_AddStringToObject(o, "mode", "recorded"); cJSON_AddNumberToObject(o, "generation", epoch);
+    cJSON *o = event("voice.begin"); cJSON_AddStringToObject(o, "id", id); cJSON_AddStringToObject(o, "mode", language[0] ? "translate" : "recorded"); cJSON_AddStringToObject(o, "language", language); cJSON_AddNumberToObject(o, "generation", epoch);
     bool ok = send_json(o);
     for (int i = 0; ok && !s_ready && s_connected && !s_recording && i < 100; ++i) vTaskDelay(pdMS_TO_TICKS(20));
     ok = ok && s_ready;
@@ -388,7 +472,13 @@ static void worker(void *unused)
         }
         if (blank && esp_spiffs_format("pocket") == ESP_OK) s_fs = esp_vfs_spiffs_register(&fs) == ESP_OK;
     }
-    if (!s_fs) ESP_LOGE(TAG, "pocket partition unavailable: captures cannot be saved");
+    if (!s_fs) {
+        ESP_LOGE(TAG, "pocket partition unavailable: captures cannot be saved");
+        muse_state_set_caption("Storage unavailable - captures cannot be saved");
+        muse_state_set_mode(MUSE_MODE_ERROR);
+    }
+    char first_note[65];
+    s_queued = s_fs ? notes(first_note) : -1;
     FILE *cache = s_fs ? fopen(FS "/reminders.json", "rb") : NULL;
     if (cache) {
         char *data = heap_caps_calloc(1, 8192, MUSE_BIG_CAPS);
@@ -398,9 +488,10 @@ static void worker(void *unused)
     esp_websocket_client_config_t config = {.uri=s_url, .headers=s_headers, .task_stack=8192, .buffer_size=2048, .network_timeout_ms=5000, .reconnect_timeout_ms=10000, .ping_interval_sec=15};
     if (s_ca[0]) config.cert_pem = s_ca; else config.crt_bundle_attach = esp_crt_bundle_attach;
     s_ws = esp_websocket_client_init(&config);
-    if (s_ws) { esp_websocket_register_events(s_ws, WEBSOCKET_EVENT_ANY, ws_event, NULL); esp_websocket_client_start(s_ws); }
+    if (s_ws) esp_websocket_register_events(s_ws, WEBSOCKET_EVENT_ANY, ws_event, NULL);
     int64_t ping_at = 0;
     for (;;) {
+        service_connection();
         work_t w;
         if (xQueueReceive(s_work, &w, pdMS_TO_TICKS(1000))) {
             char path[100], first[65];
@@ -416,28 +507,38 @@ static void worker(void *unused)
                     ok = ok && note_path(w.id, path);
                 } else ok=false;
                 ok = ok && write_atomic(path, w.data, w.len);
+                s_queued = queued + (ok ? 1 : 0);
                 ESP_LOGI(TAG, "capture save: %s (%u bytes, %d already queued)", ok ? "ok" : "failed", (unsigned)w.len, queued);
                 const char *message = ok ? "Capture saved · waiting for companion" :
                     queued < 0 ? "Storage unavailable - capture NOT saved" :
                     queued >= NOTE_LIMIT ? "Queue full - new capture NOT saved" : "Save failed - capture NOT saved";
                 muse_state_set_caption("%s", message);
+                if (!ok) muse_state_set_mode(MUSE_MODE_ERROR);
             } else if (w.kind == ACK_NOTE && note_path(w.id, path)) {
-                if (!unlink(path)) ESP_LOGI(TAG, "capture acknowledged and removed");
+                if (!unlink(path)) {
+                    if (s_queued > 0) s_queued--;
+                    ESP_LOGI(TAG, "capture acknowledged and removed");
+                }
             }
             else if (w.kind == CACHE_SYNC) update_cache(w.data, true);
             else if (w.kind == SEND_ACTION) { cJSON *o = cJSON_Parse(w.data); if (o && !send_json(o)) muse_state_set_caption("Action not sent · try again when connected"); }
             else if (w.kind == STORAGE_TEST) storage_test();
+            else if (w.kind == SAVE_MODE) {
+                nvs_handle_t n;
+                if (nvs_open("muse_pocket", NVS_READWRITE, &n) == ESP_OK) {
+                    nvs_set_str(n, "interp_lang", w.data); nvs_commit(n); nvs_close(n);
+                }
+            }
             free(w.data);
         }
-        check_reminders();
-        if (s_restart_ws && s_ws) {
-            /* The IDF client stops after a graceful server close. Transport
-             * errors reconnect themselves; a clean backend restart needs start. */
-            s_restart_ws=false;
-            vTaskDelay(pdMS_TO_TICKS(1000));
-            if (esp_websocket_client_start(s_ws) != ESP_OK) s_restart_ws=true;
+        if (s_connected && s_announce) {
+            cJSON *hello = event("device.hello"), *caps = cJSON_AddArrayToObject(hello, "capabilities");
+            cJSON_AddItemToArray(caps, cJSON_CreateString("capture_modes_v1"));
+            if (send_json(hello)) s_announce = false;
         }
-        if (s_done && !s_audio_size && !s_recording && muse_state_mode(NULL) != MUSE_MODE_IDLE) muse_state_set_mode(MUSE_MODE_IDLE);
+        check_reminders();
+        muse_mode_t mode = muse_state_mode(NULL);
+        if (s_done && !s_audio_size && !s_recording && (mode == MUSE_MODE_SPEAKING || mode == MUSE_MODE_THINKING)) muse_state_set_mode(MUSE_MODE_IDLE);
         if (!s_connected) continue;
         int64_t now = esp_timer_get_time();
         if (now > ping_at) {
@@ -487,7 +588,11 @@ bool muse_pocket_console(char *line, bool whole)
         char first[65]; size_t total = 0, used = 0;
         int queued = s_fs ? notes(first) : -1;
         if (s_fs) esp_spiffs_info("pocket", &total, &used);
-        printf("@pocket {\"configured\":%s,\"connected\":%s,\"storage\":%s,\"busy\":%s,\"queued\":%d,\"storage_total\":%u,\"storage_used\":%u,\"internal_free\":%u,\"internal_largest\":%u,\"psram_free\":%u}\n", muse_pocket_enabled()?"true":"false", s_connected?"true":"false", s_fs?"true":"false", muse_pocket_busy()?"true":"false",queued,(unsigned)total,(unsigned)used,(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),(unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),(unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM)); return true;
+        char language[3] = {0};
+        if (s_audio_lock) {
+            xSemaphoreTake(s_audio_lock, portMAX_DELAY); memcpy(language, s_capture_language, sizeof(language)); xSemaphoreGive(s_audio_lock);
+        }
+        printf("@pocket {\"configured\":%s,\"connected\":%s,\"storage\":%s,\"busy\":%s,\"queued\":%d,\"storage_total\":%u,\"storage_used\":%u,\"capture_mode\":\"%s\",\"capture_language\":\"%s\",\"recording_format\":2,\"internal_free\":%u,\"internal_largest\":%u,\"psram_free\":%u}\n", muse_pocket_enabled()?"true":"false", s_connected?"true":"false", s_fs?"true":"false", muse_pocket_busy()?"true":"false",queued,(unsigned)total,(unsigned)used,language[0]?"translate":"recorded",language,(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),(unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),(unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM)); return true;
     }
     if (!strcmp(line, "pocket.storage_test")) {
         work_t w = {.kind=STORAGE_TEST};

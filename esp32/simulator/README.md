@@ -195,12 +195,17 @@ Supported scenario keys are:
 - `link`: `boot`, `unpaired`, `pairing`, `confirm`, `connecting`, `online`,
   `offline`, or `error`
 - `speaker`, `brightness`, and `advance` in milliseconds
+- `reply_file`: a UTF-8 Markdown file, up to 16 KiB minus the terminator
 - `reply`: full reply text for the refined reader, independent of the short status caption
 - `view`: `face`, `companion`, `quiet`, `reading`, `settings`, `display`, `sound`, `wifi`, `muse`, `bluetooth`, `sleep`, or `battery`
 - `character` and `reduced_motion`: saved-display-setting stand-ins, independent of `speaker`
 - `expect_ui_answer`, `expect_ui_reading`, `expect_ui_manual`, and `expect_ui_page`:
   integer assertions against the actual presentation state (pages start at zero)
 - `expect_character` and `expect_reduced_motion`: boolean preference assertions
+- `view=markdown` loads a formatted reply fixture; `view=reading` opens it.
+  `view=settings-connect`, `view=settings-device`, and `view=about` expose the new settings.
+- `expect_settings`: `daily`, `connect`, `device`, `bluetooth`, or `about`;
+  `expect_ui_markdown=1` verifies successful parsing.
 
 Invalid options and scenario values return a nonzero exit status and identify
 the bad line.

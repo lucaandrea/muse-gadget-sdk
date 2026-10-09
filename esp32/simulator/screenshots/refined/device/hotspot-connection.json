@@ -1,0 +1,28 @@
+{
+  "board": "Waveshare ESP32-S3-Touch-AMOLED-1.75C",
+  "healthy_boot_observed": true,
+  "panic_observed": false,
+  "hotspot_auto_reconnect_verified": true,
+  "post_restart": {
+    "wifi": {
+      "on": true,
+      "state": "connected",
+      "ssid": "LucaGPT",
+      "ip": "172.20.10.2",
+      "rssi": -49
+    },
+    "paired": true,
+    "link_state": "Connecting",
+    "muse_state": "Saved"
+  },
+  "companion_configured": true,
+  "companion_connected": true,
+  "application_connection_check": {
+    "mac_ip": "172.20.10.3",
+    "device_ip": "172.20.10.2",
+    "ssid": "LucaGPT",
+    "companion_connected": true,
+    "pending_items": 0,
+    "busy": false
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "companion": {
+    "refreshes": 108,
+    "refresh_avg_us": 5345,
+    "refresh_max_us": 9588,
+    "refresh_over_budget": 0,
+    "updates": 101,
+    "update_avg_us": 885,
+    "update_max_us": 7610,
+    "internal_free": 20035,
+    "psram_free": 4158128
+  },
+  "quiet": {
+    "refreshes": 108,
+    "refresh_avg_us": 6938,
+    "refresh_max_us": 10031,
+    "refresh_over_budget": 0,
+    "updates": 100,
+    "update_avg_us": 1419,
+    "update_max_us": 2408,
+    "internal_free": 20035,
+    "psram_free": 4158128
+  }
+}

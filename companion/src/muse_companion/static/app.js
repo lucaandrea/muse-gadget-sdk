@@ -49,9 +49,13 @@ function card(title, body, eyebrow = '', status = '') {
   root.append(element('h3', title), element('div', body, 'body')); return root;
 }
 async function act(id, action) { await api(`/api/items/${id}/action`, 'POST', {action,operation_id:uid()}); await refresh(true); }
+function pendingDescription(task, payload) {
+  return [payload.instructions || payload.transcript || task.title, ...(payload.corrections || []).map(text => `Updated request: ${text}`)].join('\n\n');
+}
 function taskDetail(task) {
   let body = task.result || task.error || task.payload, parsed;
   try { parsed = JSON.parse(body); body = parsed.text || JSON.stringify(parsed, null, 2); } catch (_) { /* Plain result. */ }
+  if (!task.result && !task.error && parsed && ['research','briefing','lesson','meeting'].includes(task.kind)) body = pendingDescription(task, parsed);
   $('detail-title').textContent = task.title; $('detail-body').textContent = body; $('detail-actions').replaceChildren();
   sourceLinks($('detail-actions'), parsed?.citations);
   if(task.state==='needs_approval')$('detail-actions').append(button('Approve these exact details',async()=>{await act(task.id,'approve');$('detail').close();}));
@@ -60,12 +64,28 @@ function taskDetail(task) {
   }
   if(task.kind==='meeting'&&task.state==='recording')$('detail-actions').append(button('Finish saved recording',async()=>{await api(`/api/meetings/${task.id}/finish`,'POST');$('detail').close();await refresh(true);}));
   if (task.kind === 'lesson' && task.state === 'completed') {
+    if (parsed?.lesson) $('detail-actions').append(button('Start guided practice', async () => { await act(task.id,'study'); $('detail').close(); }));
     $('detail-actions').append(button('Save learning progress', async () => {
       const text = prompt('What did you learn, or what should we practice next?');
       if (text) await api(`/api/lessons/${task.id}/progress`, 'POST', {text,source:'lesson'});
     }));
   }
   if (['queued','running','needs_approval'].includes(task.state)) $('detail-actions').append(button('Cancel task', async () => { await api(`/api/tasks/${task.id}/cancel`,'POST'); $('detail').close(); await refresh(true); }, true));
+  if (['queued','running','completed','failed'].includes(task.state) && ['research','briefing','lesson','meeting'].includes(task.kind)) $('detail-actions').append(button('Change request', async () => {
+    if ($('work-correction')) { $('work-correction').focus(); return; }
+    const form = element('form', undefined, 'correction-form'), label = element('label', 'What should Muse change or focus on?');
+    const input = element('textarea'); input.id = 'work-correction'; input.rows = 3; input.maxLength = 12000; input.required = true; label.htmlFor = input.id;
+    const submit = element('button', 'Save correction'); submit.type = 'submit';
+    form.append(label, input, submit); $('detail-actions').append(form); input.focus();
+    form.onsubmit = e => { e.preventDefault(); run(async () => {
+      const instructions = input.value.trim(); if (!instructions) return;
+      submit.disabled = true;
+      try {
+        await api(`/api/tasks/${task.id}/control`, 'POST', {action:'steer', instructions, operation_id:uid()});
+        $('detail').close(); notice('Correction saved. Muse is updating the same task.'); await refresh(true);
+      } finally { submit.disabled = false; }
+    }); };
+  }, true));
   if (['failed','cancelled'].includes(task.state) && ['research','briefing','lesson','meeting'].includes(task.kind)) $('detail-actions').append(button('Retry analysis', async () => { await api(`/api/tasks/${task.id}/retry`,'POST'); $('detail').close(); await refresh(true); }));
   $('detail').showModal();
 }
@@ -73,17 +93,33 @@ function render() {
   const g = state.grep || {};
   $('grep-status').textContent = g.authorized ? `Authorized until ${formatDate(g.expires_at)}. Search and approved reads.` : (g.note || 'Grep is not connected.');
   $('grep-disconnect').disabled = !g.authorized;
+  const interpreters = $('pocket-interpreters'); interpreters.replaceChildren();
+  for (const item of state.interpreters || []) {
+    const view = card(item.title, item.body, 'Pocket interpreter', item.status);
+    view.append(element('p', item.source, 'muted'));
+    const controls = element('div', undefined, 'card-actions');
+    for (const action of item.buttons) controls.append(button(action.label, () => act(item.id, action.action), action.action === 'end_interpret'));
+    view.append(controls); interpreters.append(view);
+  }
   const cards = $('cards'); cards.replaceChildren();
   const tasks = state.tasks.filter(t => t.state !== 'cancelled');
   $('inbox-count').textContent = tasks.filter(t => !['completed','failed'].includes(t.state)).length;
   if (!tasks.length) empty(cards, 'Nothing slipping through the cracks.', 'Ask Muse to create a task, research an idea, or prepare your day.');
   for (const task of tasks) {
     let body = task.error || task.result || task.payload;
-    try { const p = JSON.parse(body); body = p.text || Object.entries(p).map(([k,v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join('\n'); } catch (_) {}
+    try { const p = JSON.parse(body); body = p.text || (['research','briefing','lesson','meeting'].includes(task.kind) ? pendingDescription(task,p) : Object.entries(p).map(([k,v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join('\n')); } catch (_) {}
     const c = card(task.title, body, task.kind, task.state), actions = element('div', undefined, 'card-actions');
     if (task.state === 'needs_approval') { actions.append(button('Review action', () => taskDetail(task)), button('Cancel', () => act(task.id,'reject'), true)); }
     if (task.kind === 'todo' && task.state === 'open') actions.append(button('Done', () => act(task.id,'done')));
     actions.append(button('Details ↗', () => taskDetail(task), true)); c.append(actions); cards.append(c);
+  }
+  for (const item of state.study_cards || []) {
+    const view = card(item.title, item.body, 'Guided practice', item.status);
+    view.classList.add('practice');
+    view.append(element('p', item.source, 'muted'));
+    const actions = element('div', undefined, 'card-actions');
+    for (const action of item.buttons) actions.append(button(action.label, () => act(item.id, action.action)));
+    view.append(actions); cards.prepend(view);
   }
   renderMemories();
   const reminders = $('reminder-list'); reminders.replaceChildren();
@@ -119,6 +155,7 @@ $('illustration-form').onsubmit=e=>{e.preventDefault();run(async()=>{notice('Cre
 for(const [id,path] of [['document-file','/api/documents'],['photo-file','/api/vision'],['meeting-file','/api/recordings?mode=meeting']]){$(id).onchange=()=>run(async()=>{const file=$(id).files[0];if(!file)return;if(file.size>24*1024*1024)throw Error('Keep uploads below 24 MB.');const form=new FormData();form.append('file',file);notice('Working with your file…');const url=path+(id==='photo-file'?`?question=${encodeURIComponent($('vision-question').value||'Explain this image and suggest the next useful step.')}`:'');const result=await api(url,'POST',form);if(result.text)showAnswer(result);notice(id==='document-file'?'Document uploaded. Check its indexing status below.':'Saved. Check your inbox for results.');$(id).value='';await refresh(true);});}
 document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{currentTab=b.dataset.tab;document.querySelectorAll('.view').forEach(v=>v.classList.toggle('hidden',v.id!==currentTab));document.querySelectorAll('[data-tab]').forEach(t=>t.classList.toggle('selected',t===b));});
 $('close-detail').onclick=()=>$('detail').close();
+$('interpreter-pocket').onclick=()=>run(async()=>{await api('/api/interpreter','POST',{mine:$('translate-mine').value,theirs:$('translate-theirs').value});notice('Open the pocket Inbox, tap a language, then hold to talk. Tap End to return to the assistant.');await refresh(true);});
 $('today').textContent=new Date().toLocaleDateString([],{weekday:'long',month:'long',day:'numeric'}).toUpperCase();
 
 let ws=null,audioContext=null,stream=null,capture=null,source=null,epoch=0,held=false,liveActive=false,playAt=0,playing=[],readyResolve=null;

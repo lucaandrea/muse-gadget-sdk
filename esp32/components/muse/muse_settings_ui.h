@@ -37,4 +37,5 @@ bool muse_settings_ui_in_subpage(void);
 #if LV_USE_SNAPSHOT
 /* Bench screenshots: open a page under the display lock. */
 bool muse_settings_ui_preview_page(const char *name);
+bool muse_settings_ui_check(const char *name);
 #endif

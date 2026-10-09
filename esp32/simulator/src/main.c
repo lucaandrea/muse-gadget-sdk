@@ -306,6 +306,21 @@ static bool apply_setting(const char *key, const char *value, bool real_time)
         extern void muse_reply_publish(const char *, size_t);
         muse_reply_publish(value, 0); return true;
     }
+    if (!strcmp(key, "reply_file")) {
+        FILE *file = fopen(value, "rb");
+        if (!file) return false;
+        char reply[16384];
+        size_t n = fread(reply, 1, sizeof(reply) - 1, file);
+        bool ok = !ferror(file) && fgetc(file) == EOF;
+        fclose(file); reply[n] = 0;
+        extern void muse_reply_publish(const char *, size_t);
+        if (ok) muse_reply_publish(reply, 0);
+        return ok;
+    }
+    if (!strcmp(key, "expect_settings")) {
+        extern bool muse_settings_ui_check(const char *);
+        return muse_settings_ui_check(value);
+    }
     if (!strcmp(key, "view")) return muse_ui_preview_page(value);
     if (!strcmp(key, "character") && parse_bool(value, &flag)) { muse_settings_set_character(flag); return true; }
     if (!strcmp(key, "reduced_motion") && parse_bool(value, &flag)) { muse_settings_set_reduced_motion(flag); return true; }

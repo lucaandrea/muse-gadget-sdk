@@ -1,0 +1,26 @@
+{
+  "board": "Waveshare ESP32-S3-Touch-AMOLED-1.75C",
+  "display": {
+    "character": false,
+    "animations": true
+  },
+  "wifi": "not_nearby",
+  "speaker": false,
+  "paired": true,
+  "pocket": {
+    "configured": true,
+    "connected": false,
+    "storage": true,
+    "busy": false,
+    "queued": 0,
+    "storage_total": 2884241,
+    "storage_used": 502,
+    "capture_mode": "recorded",
+    "capture_language": "",
+    "recording_format": 2,
+    "internal_free": 19975,
+    "internal_largest": 9216,
+    "psram_free": 4155816
+  },
+  "boot_clean": true
+}

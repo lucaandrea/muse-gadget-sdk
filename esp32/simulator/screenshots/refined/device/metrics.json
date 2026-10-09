@@ -64,5 +64,16 @@
     "update_max_us": 12652,
     "internal_free": 30959,
     "psram_free": 2499124
+  },
+  "final_speech": {
+    "refreshes": 333,
+    "refresh_avg_us": 2613,
+    "refresh_max_us": 27199,
+    "refresh_over_budget": 0,
+    "updates": 326,
+    "update_avg_us": 910,
+    "update_max_us": 4175,
+    "internal_free": 31191,
+    "psram_free": 2498204
   }
 }

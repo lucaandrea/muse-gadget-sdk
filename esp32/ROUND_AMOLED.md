@@ -5,45 +5,98 @@ ESP32-S3-Touch-AMOLED-1.75C**, USB serial/MAC `7c:0c:5f:42:4a:4c`.
 The factory firmware identified the board; esptool confirmed 32 MB flash
 and the boot log confirmed 8 MB octal PSRAM and a 466 × 466 display.
 
-## Current companion installation and storage repair
+## Current combined installation
 
-The current installed application uses the [Pocket Companion](../companion/README.md)
-backend. It reconnects over verified TLS to the service on this Mac, which must
-remain awake and reachable for online replies. The direct Muse/TTS configuration
-described below records the earlier installation and remains available when
-pocket mode is disabled.
+The current build combines the [refined circular UI](REFINED_UI.md), the
+[Pocket Companion](../companion/README.md), and the capture-storage repair.
+Both `CONFIG_MUSE_POCKET` and `CONFIG_MUSE_REFINED_UI` must remain enabled;
+flashing the ordinary UI profile alone disables the companion. The pocket
+profile now explicitly enables both features and local hostname resolution.
 
-The “storage full/unavailable” message was caused by recording filenames that
-exceeded SPIFFS's 31-character limit, including the leading slash and temporary
-suffix. Full 128-bit capture IDs now use lossless base64url filenames that fit
-the installed filesystem format. The repair preserves the capture partition,
-saved Wi-Fi, pairing and companion credentials; it does not reformat storage.
+The companion endpoint is `wss://Lucas-M-Max-93.local:8765/v1/device`. This
+hostname follows the Mac across network changes. The installed service has a
+server certificate signed by the device's existing trusted root, so certificate
+and hostname verification stay enabled. The original TLS files are backed up
+under the installed service's `data/tls-backup-20261008/`. Its trusted root is
+`data/local-ca.pem`; the server certificate and key remain `data/local-cert.pem`
+and `data/local-key.pem`. Private provisioning files now use the hostname.
+The Mac must remain awake and reachable for online replies.
 
-The repaired pocket firmware is 2,232,320 bytes, leaving 47% of its app slot free.
-On-device atomic write/flush/rename/read verification passed. Storage reports
-2,884,241 usable bytes, 502 used bytes and zero queued captures. Firmware builds
-for 1.75C and 1.75 passed, as did 210 host tests (one existing skip). The installed
-image and validation records are in the ignored `../build-muse-storage-verified/`
-directory. The source snapshot for this repair retains the deployed interface;
-the separate refined-interface work is still in progress.
+The “storage full/unavailable” error came from capture filenames exceeding
+SPIFFS's 31-character limit, including the leading slash and temporary suffix.
+The full 128-bit capture ID now uses a lossless base64url filename that fits the
+existing format. The repair preserves the capture partition, saved networks,
+pairing and companion credential; it does not reformat storage.
 
-From the repository root, verify storage without uploading any audio:
+The combined build also places the inbox beside the touch-only speaker control,
+clear of the screen title, and keeps card actions inside the circular safe area.
+Reading hides the inbox control. Offline captures have a saved-count notice;
+storage and provider failures remain visible in the refined UI.
+
+The subsequent Pocket update adds versioned recording metadata and native
+interpreter/lesson action acknowledgments. Recordings retain their translation
+language across offline queuing; assistant capture remains the default.
+`pocket.status` reports `recording_format: 2`. The backend also supplies guided
+lesson cards with touch quizzes and saved progress. Live device use of these
+new controls still needs the Wi-Fi connection described below.
+
+The Markdown/menu/motion update is 3,543,040 bytes, leaving 651,264 bytes
+(15.5%) of its 4 MB app slot free. The latest
+application is `../build-muse-pocket/muse-gadget.bin`, with SHA-256
+`fd9b613b06fc234ddb34bdb754ddeada3ef6c10e27156fd5942da3e9b2d8642f`.
+Its application-only flash at `0x20000` was verified. The previous 4 MB
+application slot was backed up to the ignored build directory as
+`before-markdown-ui.bin`. The subsequent boot reached Muse Gadget starting
+and the 466 × 466 UI without a panic. The preceding combined binary, private configuration
+and validation records remain in the ignored `../build-muse-combined-verified/`
+directory. The isolated build
+source snapshot is `/tmp/muse-combined-install-20261008/`.
+
+Storage's atomic write/flush/rename/read check passes: 2,884,241 usable bytes,
+502 used bytes and zero queued captures. The built-in MP3 diagnostic decodes
+58,752 samples (3.67 seconds). Device screenshots verify card controls inside
+the circular safe area; the UI simulator covers 412 and 466 pixels. The current combined
+firmware build passed for the connected Waveshare board. The latest firmware host run passed all 228 tests without skips,
+with the ESP-IDF environment loaded. These checks do not establish physical
+audibility or a live spoken turn on this network.
+
+At the UI update check, the saved LucaGPT hotspot was not visible to the
+device. Its previously verified connection and companion setup remain saved;
+an online agent turn could not be repeated during this install. The existing
+speaker mute preference was preserved. No credentials were printed or committed.
+The earlier connected-device test played 69,120 speech frames (4.32 seconds)
+with zero speaker-write errors, before this network change.
+
+From the repository root, verify storage without uploading audio:
 
 ```sh
 python esp32/tools/muse/pocket.py --port /dev/cu.usbmodem2101 --storage-test
 ```
 
-The `pocket.audio_status` USB console command reports incoming speech frames,
-successful speaker frames and write errors. Playback failures also show a
-caption on the device. The on-device speech test received and played all 69,120
-frames (4.32 seconds at 16 kHz) with zero write errors and no buffered audio left.
-This verifies digital playback; physical audibility requires the listener.
-For subsequent updates, use the pocket build profile in
-the companion README so the capture partition and companion mode remain enabled.
+The subsequent phone-pairing fix pauses the Pocket network task during a BLE
+phone connection to release its 8 KiB internal stack, then resumes it when the
+phone disconnects and Wi-Fi is available. Storage and queued captures stay
+active. Five new supervisor tests pass in addition to the 228-test suite.
+The application-only flash verified successfully. LucaGPT initially rejoined
+at 172.20.10.2, then disappeared from scans after a disconnect (reason 200);
+automatic retries remain active. Three queued captures remain intact
+(183,481 bytes used).
+Phone account setup remains unverified: the prior attempt completed Bluetooth
+confirmation and network scanning but never delivered provision_v2 before
+timing out. The Mac is currently on office Wi-Fi, so the local companion is
+also unreachable from the device's hotspot network. See REFINED_UI.md for
+the current follow-up; the earlier checks above are historical snapshots.
+
+Use the pocket build command in the companion README for future updates and
+check the generated config includes the two UI/companion flags above and
+`CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_muse_pocket.csv"`.
+The remaining sections describe the original direct Muse/TTS installation,
+which remains available when pocket mode is disabled.
 
 ## Account setup
 
-Pairing is complete and the device reports **Online** after the Wi-Fi setup.
+The original account installation completed and reported **Online** after
+Wi-Fi setup. The current re-pairing attempt is still incomplete as noted above.
 For future setup after a factory reset:
 
 1. Open **Settings → Devices** in the Muse phone app and enable Developer mode.

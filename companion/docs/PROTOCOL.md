@@ -9,6 +9,14 @@ Server JSON messages contain `v: 1`; the initial `hello` declares protocol,
 audio rate, device ID and recording limit. Unsupported firmware protocols
 should be migrated explicitly, not guessed.
 
+Firmware announces `device.hello {capabilities:["capture_modes_v1"]}` after each
+connection. Only an announced client can be put into native interpreter mode.
+`capture.mode {mode:"recorded"|"translate",language:""|"es"|...}` selects the
+mode for the next capture. The firmware freezes that mode and language in each
+recording's versioned local header. It sends those saved values in `voice.begin`
+when uploading, even if the current mode has since changed. Old raw PCM files
+upload as recorded assistant input. This extension preserves protocol v1.
+
 ## Voice
 
 1. Client sends `voice.begin` with `id` (8–96 characters), uint32 `generation`,
@@ -17,8 +25,8 @@ should be migrated explicitly, not guessed.
 2. Wait for `voice.ready` with matching generation.
 3. Send binary messages: four-byte little-endian generation followed by signed
    PCM16 little-endian mono at 16,000 Hz. Maximum message size is 32,772 bytes.
-4. `voice.end` ends the microphone input. Recorded mode persists the complete
-   capture before sending `voice.received {id}`. The device may then delete its
+4. `voice.end` ends the microphone input. Recorded and translate modes persist
+   the complete capture and its mode/language before `voice.received {id}`. The device may then delete its
    flash copy. ACK does not mean the AI work completed.
 5. `heard` and `caption` carry text; `card` carries a typed native card.
    Binary output uses the same PCM format and generation, paced for playback.
@@ -38,11 +46,28 @@ server deadline ends the billable session. There is no invented upstream
 three `{id,label,action}` buttons. Content is text, never HTML or executable
 LVGL code. Device capacity is eight recent cards; the phone has the full inbox.
 
+Analysis cards offer `cancel`. Interpreter cards use `language_a`, `language_b`
+and `end_interpret`, selecting the next speaker or returning to assistant mode.
+The translated source transcript is evidence to display, never a tool request.
+An `interpreter.changed` backend event sends the applicable device a new capture
+mode and control card; reconnect sends its saved mode and card again.
+
+Completed structured lessons offer `study`. Guided cards have IDs beginning
+`study:` and use `study_next`, `study_end`, `choice_a`, `choice_b`, and `choice_c`.
+The backend checks the current page before applying a choice or advancing.
+Progress and its operation receipt commit together. `study.changed` pushes the
+new page; reconnect restores saved practice. The countdown source refreshes
+every 15 seconds while connected. Task revisions invalidate old practice.
+
 `action {id,action,operation_id,minutes?}` requests a permitted transition.
 `action.result` confirms the actual saved outcome. Never display successful
 execution based solely on a button press. Offline actions are explicitly refused
 and remain reviewable. Retry ambiguous external writes by inspecting state,
 not by inventing a new operation ID.
+
+When `action.result.result.card` is present, firmware immediately installs that
+card. Otherwise it removes the acted-on card. This prevents an acknowledgment
+from hiding refreshed interpreter or lesson controls because of event ordering.
 
 `sync` carries `server_epoch` and up to eight upcoming/due reminders. Cache the
 reminder list only when it changes. Use the authenticated server clock plus

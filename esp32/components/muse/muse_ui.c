@@ -1523,6 +1523,7 @@ bool muse_ui_preview_page(const char *name)
     if (s_refined && muse_refined_preview(name)) face = true;
 #endif
 #if CONFIG_MUSE_POCKET
+    if (face) muse_cards_show(false);
     if (!strcmp(name, "inbox")) {
         muse_cards_show(true);
         muse_board->display_unlock();
@@ -1708,7 +1709,13 @@ esp_err_t muse_ui_start(void)
     }
     build_overlays();
 #if CONFIG_MUSE_POCKET
-    if (muse_pocket_enabled()) muse_cards_build(s_face ? s_face : lv_screen_active(), s_w, s_h, muse_pocket_action);
+    if (muse_pocket_enabled()) muse_cards_build(s_face ? s_face : lv_screen_active(), s_w, s_h, muse_pocket_action,
+#if CONFIG_MUSE_REFINED_UI
+                                             s_refined
+#else
+                                             false
+#endif
+                                             );
 #endif
     lv_timer_create(frame_tick, muse_board->frame_ms, NULL);
     s_ready = true;

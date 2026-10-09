@@ -13,7 +13,7 @@ class StrictModel(BaseModel):
 class Button(StrictModel):
     id: str = Field(max_length=64)
     label: str = Field(max_length=24)
-    action: Literal["done", "snooze", "approve", "reject", "open", "next", "dismiss"]
+    action: Literal["done", "snooze", "approve", "reject", "open", "next", "dismiss", "cancel", "language_a", "language_b", "end_interpret", "study", "study_next", "study_end", "choice_a", "choice_b", "choice_c"]
 
 
 class Card(StrictModel):
@@ -50,7 +50,7 @@ class ChatIn(StrictModel):
 
 
 class ActionIn(StrictModel):
-    action: Literal["done", "snooze", "approve", "reject", "dismiss"]
+    action: Literal["done", "snooze", "approve", "reject", "dismiss", "cancel", "language_a", "language_b", "end_interpret", "study", "study_next", "study_end", "choice_a", "choice_b", "choice_c"]
     operation_id: str = Field(min_length=8, max_length=96)
     minutes: int = Field(default=10, ge=1, le=10080)
 
@@ -62,3 +62,14 @@ class NotificationIn(StrictModel):
     source_id: str = Field(min_length=1, max_length=120)
     priority: Literal["normal", "important"] = "normal"
 
+
+class WorkControlIn(StrictModel):
+    action: Literal["steer", "cancel"]
+    instructions: str = Field(default="", max_length=12000)
+    operation_id: str = Field(min_length=8, max_length=96)
+
+
+class InterpreterIn(StrictModel):
+    mine: str = Field(min_length=2, max_length=2)
+    theirs: str = Field(min_length=2, max_length=2)
+    device_id: str = Field(default="", max_length=64)

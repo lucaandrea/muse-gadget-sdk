@@ -57,11 +57,11 @@ void muse_character_update(muse_mode_t mode, float now, float level, bool happy,
     else if (mode == MUSE_MODE_THINKING) pose = 3;
     else if (mode == MUSE_MODE_SPEAKING && !reduced) pose = level > .36f ? 5 : level > .09f ? 4 : 0;
     else if (!reduced && fmodf(now, 5.2f) < .16f) pose = 1;
-    int frame = reduced ? 0 : (int)(now * (mode == MUSE_MODE_IDLE ? 8 : 16));
+    int frame = reduced ? 0 : (int)(now * (mode == MUSE_MODE_IDLE ? 12 : 20));
     if (quiet) {
         if (s_pose == -2 && s_size == size && s_orb_frame == frame) return;
         memset(s_pixels, 0, size*size*2);
-        float angle = reduced ? .4f : frame * .018f;
+        float angle = reduced ? .4f : now * (mode == MUSE_MODE_IDLE ? .28f : .48f);
         float c = cosf(angle), sn = sinf(angle);
         for (int i = 0; i < 96; ++i) {
             float x = s_points[i][0]*c + s_points[i][2]*sn;

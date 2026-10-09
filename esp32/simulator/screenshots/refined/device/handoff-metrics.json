@@ -1,0 +1,11 @@
+{
+  "refreshes": 85,
+  "refresh_avg_us": 4795,
+  "refresh_max_us": 4973,
+  "refresh_over_budget": 0,
+  "updates": 85,
+  "update_avg_us": 472,
+  "update_max_us": 487,
+  "internal_free": 46307,
+  "psram_free": 3415544
+}

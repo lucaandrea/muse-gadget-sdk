@@ -27,6 +27,13 @@ Try:
 - “Make a task to pack it, and remind me tomorrow at 8:30 AM.”
 - “Draft a 30-minute calendar event tomorrow at 10 AM to review the prototype.”
 - “Research three ways to improve battery life on an ESP32-S3 AMOLED device.”
+- “Move that reminder to tomorrow at 10:30 and rename it Pack the prototype.”
+- “Change my battery research to focus on rechargeable options.”
+- “Start an English and Spanish interpreter.” Then open the pocket Inbox,
+  tap the speaker's language and hold to talk. Tap **End** to resume the assistant.
+- “Give me a five-minute lesson on fractions.” Open the completed lesson and
+  choose **Practice** on the pocket or **Start guided practice** on the phone.
+- “Run the companion tests.” Review the configured workflow before approving it.
 
 Calendar approval creates an `.ics` file for import. It does **not** silently
 connect a calendar account, invite participants or send messages. External
@@ -38,18 +45,18 @@ accounts must be connected separately.
 |---|---|
 | 1. Natural conversation | Device hold-to-talk → durable capture → transcription → tool-using assistant → spoken reply. New presses interrupt playback. Phone additionally supports GPT-Live with client delegation. Device full-duplex GPT-Live/AEC is not enabled. |
 | 2. Personal memory | Explicit capture, source/date, keyword recall, correction, deletion, cache invalidation and bounded conversation history. No implicit ChatGPT memory access. |
-| 3. Reminders | SQLite scheduler, Done/Snooze/Change time, device cache and saved-Wi-Fi arrival triggers. Offline acknowledgments require reconnection. Offline cold boot needs a valid system clock before due-time evaluation. |
+| 3. Reminders | SQLite scheduler, voice correction/completion/snooze, Done/Snooze/Change time, device cache and saved-Wi-Fi arrival triggers. Offline acknowledgments require reconnection. Offline cold boot needs a valid system clock before due-time evaluation. |
 | 4. Briefings | On-demand or daily local-hour briefings from saved tasks, reminders, memories and ingested notifications. External calendar/email data needs a configured integration. |
 | 5. App actions | Native/phone review, immutable proposed arguments, operation receipts and single execution. Local task inbox and calendar-file workflow work immediately; authenticated HTTP adapters are configurable. |
 | 6. Notification filtering | Ingestion endpoint, sender rules, digest, quiet hours, explanations and feedback. Optional Decisions adapter (`MUSE_DECISIONS=1`), disabled by default. |
-| 7. Background research | Persistent jobs, web search, citations, progress, cancellation and safe retry of failed analysis. Uses our scheduler and Responses; not the beta Agents execution service. |
+| 7. Background research | Persistent jobs, web search, citations, voice or phone corrections, native cancellation and safe retry of failed analysis. Corrections keep the task ID and increment its revision; late old results cannot replace revised work. Uses our scheduler and Responses; not the beta Agents execution service. |
 | 8. Meeting notebook | Explicit phone recording, bounded 20-second uploads, marked segments, transcript and decision/follow-up extraction. Also accepts uploaded recordings. Segmented captions, not word-by-word live transcription; no speaker identification. |
-| 9. Interpreter | Two phone language controls, dedicated Realtime Translate, paired transcripts, synthesized audio and backend 16/24 kHz conversion. Alternating turns avoid acoustic feedback. |
+| 9. Interpreter | Native language/End cards and phone controls, dedicated Realtime Translate, paired transcripts and audio, backend 16/24 kHz conversion. Each offline recording retains its target language; translation speech is never passed to assistant tools. Alternating turns avoid acoustic feedback. Requires the capture-modes firmware and an initial connection. |
 | 10. Documents | Upload, vector-store indexing, File Search with citations, original download and deletion. Index completion is visible. |
 | 11. Vision | Phone camera/photo upload; metadata stripped, size reduced, vision reasoning returned to the assistant. No ESP32 camera assumed. |
-| 12. Coaching | Durable short lessons, questions and saved learning progress. The first UI uses readable cards; adaptive lesson diagrams/timers remain future UI work. |
+| 12. Coaching | Schema-validated teaching steps, three-choice quizzes, answer explanations, a five-minute text countdown and restart-safe progress. Touch or voice controls advance, repeat or finish. Saved mistakes inform later lessons. Diagrams and an animated circular timer remain future UI work. |
 | 13. Home controls | Fixed authenticated HTTP workflows with approval. Actual home devices require a reachable owner-configured bridge. |
-| 14. Computer work | Fixed executable/argument workflows, output limits and timeout. Opt-in local runner, **not a sandbox**. No model-generated shell commands or arbitrary browser control. |
+| 14. Computer work | Fixed executable/argument workflows, output limits and timeout. This installation includes **Run companion tests**, with review before execution. Local runner, **not a sandbox**. No model-generated shell commands or arbitrary browser control. |
 | 15. Task-aware screen | Bounded typed cards, native text, scrollable detail and up to three tested actions. Oversize approvals require full review on the phone. Image generation is available on the phone; device image layouts remain separate work. |
 
 ## Connect a device over TLS
@@ -83,6 +90,11 @@ normal phone access, use a public hostname with a valid HTTPS certificate.
 The LAN backend requires this Mac to remain awake and reachable. Away-from-home
 use needs an always-on HTTPS backend or a reachable private network. A phone
 hotspot alone does not make the Mac's LAN address reachable.
+
+The installed device currently uses `wss://Lucas-M-Max-93.local:8765/v1/device`
+and a server certificate signed by its existing trusted local root. Its saved
+Wi-Fi networks were not visible at the latest check. See the
+[installation record](../esp32/ROUND_AMOLED.md) before reprovisioning TLS or Wi-Fi.
 
 On this Mac, `uv run muse-companion install-service` installs the per-user
 `ai.muse.pocket-companion` launch agent. It starts at login and restarts after a
@@ -136,6 +148,27 @@ receipt removes the local copy. A persistent sequence preserves capture order
 after reconnect/reboot. Full or damaged storage is reported; damaged storage
 is not automatically formatted. Reminder flash writes occur only on changes.
 
+New recordings prepend a 16-byte versioned header to PCM. The header saves the
+capture mode, translation language and audio length; it is removed before upload.
+Existing raw PCM files remain readable. Switching languages or ending translation
+does not reinterpret already queued recordings. Selected interpreter language
+also survives device reboot. Start/switch/end controls need a live connection;
+capture continues into the bounded offline queue.
+
+Research, briefing, lesson and meeting detail views have **Change request**.
+This stores the correction, cancels the old analysis attempt, and reruns the same
+task. App-action approvals cannot be edited this way: propose a new action with
+new review details. Revision checks discard late results from an older attempt.
+
+Guided lessons use predefined native cards, never generated executable UI.
+Teaching pages offer **Next** and **Finish**; quizzes show **A**, **B** and **C**,
+then explain the answer before advancing. “Repeat,” “next,” and “finish this
+lesson” use the same saved state through voice. A text countdown refreshes while
+connected; taking longer than five minutes is allowed. Results and closed
+practice attempts are saved locally for subsequent coaching. Controls require
+a connection; they do not claim offline progress was saved. Revising a lesson
+invalidates its earlier practice pages. Older text-only lessons remain readable.
+
 Recording filenames encode the full capture ID in 22 base64url characters so
 both the final file and its atomic `.tmp` name fit the existing 32-byte SPIFFS
 name field. Keep that filesystem setting unchanged on installed devices;
@@ -165,6 +198,13 @@ promising exactly-once behavior from a third-party service that lacks it.
 The local process runner executes as the backend's OS user. Put it in an
 isolated container/account for stronger boundaries, and expose only trusted
 fixed workflows. It does not grant remote arbitrary computer control.
+
+This Mac's private runtime `data/integrations.json` contains
+`run_companion_tests`: the companion virtual environment's Python runs
+`-m pytest tests -q` in the companion checkout, with no model-supplied arguments
+and a 120-second timeout. It requires a review card before execution. The
+configured runner was exercised successfully; moving this checkout requires
+updating its private absolute paths.
 
 ## Operating behavior
 

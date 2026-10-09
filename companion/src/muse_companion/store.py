@@ -49,8 +49,15 @@ class Store:
             CREATE TABLE IF NOT EXISTS conversation(seq INTEGER PRIMARY KEY AUTOINCREMENT, role TEXT NOT NULL, text TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS captures(id TEXT PRIMARY KEY, digest TEXT NOT NULL, pcm BLOB NOT NULL, state TEXT NOT NULL DEFAULT 'queued', transcript TEXT, result TEXT, error TEXT DEFAULT '', created REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS meeting_segments(meeting TEXT NOT NULL, position INTEGER NOT NULL, digest TEXT NOT NULL, pcm BLOB NOT NULL, transcript TEXT, marked INTEGER DEFAULT 0, PRIMARY KEY(meeting, position));
-            PRAGMA user_version=1;
+            CREATE TABLE IF NOT EXISTS work_revisions(task TEXT NOT NULL, revision INTEGER NOT NULL, instruction TEXT NOT NULL, created REAL NOT NULL, PRIMARY KEY(task,revision));
+            CREATE TABLE IF NOT EXISTS study_sessions(task TEXT PRIMARY KEY, revision INTEGER NOT NULL, position INTEGER NOT NULL, state TEXT NOT NULL, answers TEXT NOT NULL, started REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS study_attempts(id INTEGER PRIMARY KEY AUTOINCREMENT, task TEXT NOT NULL, title TEXT NOT NULL, revision INTEGER NOT NULL, answers TEXT NOT NULL, started REAL NOT NULL, ended REAL NOT NULL);
         """)
+        if "revision" not in {r["name"] for r in self.rows("PRAGMA table_info(tasks)")}:
+            self.execute("ALTER TABLE tasks ADD COLUMN revision INTEGER NOT NULL DEFAULT 1")
+        if "context" not in {r["name"] for r in self.rows("PRAGMA table_info(captures)")}:
+            self.execute("ALTER TABLE captures ADD COLUMN context TEXT NOT NULL DEFAULT '{}'")
+        self.execute("PRAGMA user_version=4")
     def recover(self):
         # Only the service calls this on startup, never provisioning clients.
         # Never blindly repeat an external side effect after process failure.
@@ -181,6 +188,38 @@ class Store:
                 self.event("reminder.due", item)
         return due
 
+    def reschedule_reminder(self, identity, title, due, ssid=""):
+        with self.transaction():
+            if not self.execute("UPDATE reminders SET title=?,due=?,ssid=?,state='scheduled',delivered=NULL,revision=revision+1 WHERE id=?", (title, due, ssid, identity)):
+                raise ValueError("Reminder not found")
+            self.event("reminders.changed", {"id": identity})
+            return self.one("SELECT * FROM reminders WHERE id=?", (identity,))
+
+    def revise_work(self, identity, instruction):
+        with self.transaction():
+            task = self.one("SELECT * FROM tasks WHERE id=?", (identity,))
+            if not task or task["kind"] not in ("research", "briefing", "lesson", "meeting") or task["state"] not in ("queued", "running", "completed", "failed"):
+                raise Conflict("Only analysis work can be revised; external actions require a new proposal")
+            if not instruction.strip() or len(instruction) > 12000 or task["revision"] >= 100:
+                raise ValueError("Provide a correction of up to 12000 characters; start a new task after 100 revisions")
+            payload = json.loads(task["payload"])
+            corrections = payload.get("corrections", []) + [instruction]
+            if sum(map(len, corrections)) > 24000:
+                raise ValueError("This task has too many corrections. Start a new task with the current requirements")
+            payload["corrections"] = corrections
+            revision = task["revision"] + 1
+            self.execute("UPDATE tasks SET payload=?,revision=?,state='queued',result='',error='',updated=? WHERE id=?", (json.dumps(payload), revision, time.time(), identity))
+            self.execute("INSERT INTO work_revisions VALUES (?,?,?,?)", (identity, revision, instruction, time.time()))
+            self.event("task.changed", {"id": identity, "state": "queued", "revision": revision})
+            return self.one("SELECT * FROM tasks WHERE id=?", (identity,))
+
+    def transition_job(self, identity, revision, state, *, result="", error="", expected="running"):
+        with self.transaction():
+            changed = self.execute("UPDATE tasks SET state=?,result=?,error=?,updated=? WHERE id=? AND revision=? AND state=?", (state, result, error, time.time(), identity, revision, expected))
+            if changed:
+                self.event("task.changed", {"id": identity, "state": state, "revision": revision})
+            return bool(changed)
+
     def task(self, kind: str, title: str, payload: dict, state="queued") -> dict:
         identity, now = new_id(), time.time()
         self.execute("INSERT INTO tasks(id,title,state,kind,payload,created,updated) VALUES (?,?,?,?,?,?,?)", (identity, title[:200], state, kind, json.dumps(payload), now, now))
@@ -200,13 +239,13 @@ class Store:
                 raise ValueError(f"Daily {category} limit reached")
             self.execute("UPDATE usage SET amount=amount+? WHERE day=? AND category=?", (amount, day, category))
 
-    def capture(self, identity: str, pcm: bytes):
+    def capture(self, identity: str, pcm: bytes, context: dict | None = None):
         digest = hashlib.sha256(pcm).hexdigest()
         with self.transaction():
             old = self.one("SELECT digest FROM captures WHERE id=?", (identity,))
             if old and old["digest"] != digest:
                 raise Conflict("Recording ID was reused with different audio")
-            self.execute("INSERT OR IGNORE INTO captures(id,digest,pcm,created) VALUES (?,?,?,?)", (identity, digest, pcm, time.time()))
+            self.execute("INSERT OR IGNORE INTO captures(id,digest,pcm,created,context) VALUES (?,?,?,?,?)", (identity, digest, pcm, time.time(), json.dumps(context or {})))
         return self.one("SELECT id,state,transcript,result,error FROM captures WHERE id=?", (identity,))
 
     def close(self):

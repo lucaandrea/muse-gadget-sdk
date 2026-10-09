@@ -131,6 +131,45 @@ def main() -> None:
             "expect_reduced_motion=true\nview=face\nadvance=300\n")
         render(binary, preferences, tmp_path / "preferences.ppm", "waveshare-s3-175c")
 
+        # Both visual modes must keep moving after their initial reveal.
+        # Reduced motion is intentionally static, independent of mode.
+        for character in ("true", "false"):
+            for reduced in ("true", "false"):
+                frames = []
+                for duration in (1600, 2600):
+                    animation = tmp_path / "animation.txt"
+                    animation.write_text(f"face=idle\ncharacter={character}\n"
+                        f"reduced_motion={reduced}\nadvance={duration}\n")
+                    digest, _ = render(binary, animation, tmp_path / "animation.ppm", "waveshare-s3-175c")
+                    frames.append(digest)
+                assert (frames[0] == frames[1]) == (reduced == "true"), (character, reduced)
+
+        # The new groups must expose Bluetooth and About through real touch.
+        for board, size in (("watcher", 412), ("waveshare-s3-175c", 466)):
+            menu = tmp_path / "menu.txt"
+            x = size // 2
+            menu.write_text(f"face=idle\nadvance=200\nview=settings\nadvance=300\nexpect_settings=daily\n"
+                f"touch={x},102,down\nadvance=80\ntouch={x},102,up\nadvance=200\nexpect_settings=connect\n"
+                f"touch={x},230,down\nadvance=80\ntouch={x},230,up\nadvance=200\nexpect_settings=bluetooth\n")
+            render(binary, menu, tmp_path / "bluetooth.ppm", board)
+            menu.write_text(f"face=idle\nadvance=200\nview=settings\nadvance=300\n"
+                f"touch={x+95},102,down\nadvance=80\ntouch={x+95},102,up\nadvance=200\nexpect_settings=device\n"
+                f"touch={x},230,down\nadvance=80\ntouch={x},230,up\nadvance=200\nexpect_settings=about\n")
+            render(binary, menu, tmp_path / "about.ppm", board)
+
+        # Multiline Markdown uses the production parser and styled renderer.
+        markdown = tmp_path / "reply.md"
+        markdown.write_text("# Small steps\n\n**Begin here** with *one breath*.\n\n"
+            "- Notice the light\n- Take a short walk\n\n> A little space helps.\n\n"
+            + chr(96) * 3 + "python\nprint('hello')\n" + chr(96) * 3 +
+            "\n\n| Plan | Time |\n|---|---|\n| Walk | 5 min |\n\n"
+            "[Read more](https://example.com)\n\n世界很大。")
+        md_scenario = tmp_path / "markdown.txt"
+        md_scenario.write_text(f"face=thinking\nadvance=300\nreply_file={markdown}\nface=idle\n"
+            "advance=300\nview=reading\nadvance=300\nexpect_ui_markdown=1\nexpect_ui_page=0\n"
+            "touch=329,396,down\nadvance=80\ntouch=329,396,up\nadvance=200\nexpect_ui_page=1\n")
+        render(binary, md_scenario, tmp_path / "markdown.ppm", "waveshare-s3-175c")
+
         # Showing shutdown must not lock subsequent preview state selections.
         after_off = tmp_path / "after-off.txt"
         after_off.write_text("face=off\n" + (HERE / "scenarios/listening.txt").read_text())

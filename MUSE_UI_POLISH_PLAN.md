@@ -1,6 +1,6 @@
 # Muse UI polish proposal
 
-Prepared October 8, 2026. Design study and implementation plan; firmware has not been changed.
+Original design study and implementation plan, prepared October 8, 2026 before firmware changes.
 
 **Implemented October 8, 2026:** see [the installation and validation notes](esp32/REFINED_UI.md). The text below records the original proposal.
 

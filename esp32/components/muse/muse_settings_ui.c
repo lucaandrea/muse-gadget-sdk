@@ -67,7 +67,9 @@ static int s_text_scale = 466;
 static lv_obj_t *s_tile;
 static lv_obj_t *s_current;
 static lv_obj_t *s_home, *s_wifi, *s_hatch, *s_ble, *s_sound, *s_sleep, *s_battery, *s_power, *s_text;
-static lv_obj_t *s_display;
+static lv_obj_t *s_display, *s_info;
+static lv_obj_t *s_groups[3], *s_group_labels[3], *s_home_rows[9];
+static int s_group;
 
 /*
  * Only home is kept. A sub-page is built when it opens and deleted on the way
@@ -80,7 +82,10 @@ typedef struct {
 } page_t;
 
 /* Home values. */
-static lv_obj_t *s_home_wifi, *s_home_hatch, *s_home_ble, *s_home_sound, *s_home_sleep, *s_home_battery, *s_about;
+static lv_obj_t *s_home_wifi, *s_home_hatch, *s_home_ble, *s_home_sound, *s_home_sleep, *s_home_battery;
+#if CONFIG_MUSE_POCKET
+static lv_obj_t *s_pocket_status;
+#endif
 
 /* Wi-Fi page. */
 static lv_obj_t *s_wifi_sw, *s_wifi_status, *s_wifi_saved, *s_wifi_scan_btn, *s_wifi_scan_lbl, *s_wifi_list;
@@ -252,7 +257,9 @@ static lv_obj_t *page(lv_obj_t *tile, const char *title, bool back, lv_obj_t **l
     /* Clear the page dots on flat panels, or the bottom curve on round ones. */
     lv_obj_set_style_pad_bottom(list, muse_board->round ? 8 : compact ? 32 : 110, 0);
     lv_obj_set_scroll_dir(list, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_style_bg_color(list, lv_color_hex(COLOR_ACCENT), LV_PART_SCROLLBAR);
+    lv_obj_set_style_width(list, 3, LV_PART_SCROLLBAR);
     *list_out = list;
     return p;
 }
@@ -399,7 +406,7 @@ static lv_obj_t *info_row(lv_obj_t *list, const char *text)
 
 static void drop(lv_obj_t *p)
 {
-    lv_obj_t **const pages[] = { &s_wifi, &s_hatch, &s_ble, &s_sound, &s_display, &s_sleep, &s_battery, &s_power, &s_text };
+    lv_obj_t **const pages[] = { &s_wifi, &s_hatch, &s_ble, &s_sound, &s_display, &s_sleep, &s_battery, &s_power, &s_text, &s_info };
     for (size_t i = 0; i < sizeof(pages) / sizeof(pages[0]); i++) {
         if (*pages[i] == p) {
             *pages[i] = NULL;
@@ -917,6 +924,9 @@ static void build_hatch_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
     s_hatch = page(tile, "MUSE", true, &list);
+#if CONFIG_MUSE_POCKET
+    s_pocket_status = note(list, "");
+#endif
     s_link_reset_armed_us = 0;
     s_link_status = note(list, "");
     button(list, "Reset pairing", COLOR_DANGER, on_link_reset, &s_link_reset_lbl);
@@ -932,6 +942,13 @@ static void build_hatch_page(lv_obj_t *tile)
 
 static void tick_hatch(void)
 {
+#if CONFIG_MUSE_POCKET
+    char pocket[128];
+    snprintf(pocket, sizeof(pocket), "Pocket Companion: %s\n%d saved capture%s",
+             !muse_pocket_enabled() ? "not set up" : muse_pocket_connected() ? "online" : "offline",
+             muse_pocket_queued(), muse_pocket_queued() == 1 ? "" : "s");
+    set_text(s_pocket_status, pocket);
+#endif
     char link[64];
     snprintf(link, sizeof(link), "Muse app: %s\n%s", muse_link_hatch_linked() ? "paired" : "not paired",
              muse_link_state_name(muse_link_state()));
@@ -979,8 +996,11 @@ static void build_ble_page(lv_obj_t *tile)
     s_ble_sw = switch_row(list, "Phone setup", muse_settings_ble_on(), on_ble_sw);
     s_ble_status = note(list, "");
     button(list, "Forget paired phones", COLOR_DANGER, on_ble_forget, NULL);
-    note(list, "When on, Muse is visible to phones nearby. Open tools/ble_setup.html in Chrome, "
-               "connect, and enter the code Muse shows to pair.");
+    char help[256];
+    snprintf(help, sizeof(help), "In the Muse phone app, open Settings > Devices and enable Developer mode. "
+             "Tap +, select this MuseGadget, then press the %s button when asked to confirm.",
+             muse_board->talk_button);
+    note(list, help);
 }
 
 static void tick_ble(void)
@@ -1108,7 +1128,7 @@ static void on_character(lv_event_t *e)
 
 static void on_motion(lv_event_t *e)
 {
-    muse_settings_set_reduced_motion(lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED));
+    muse_settings_set_reduced_motion(!lv_obj_has_state(lv_event_get_target_obj(e), LV_STATE_CHECKED));
 }
 #endif
 
@@ -1120,7 +1140,7 @@ static void build_display_page(lv_obj_t *tile)
     switch_row(list, "Character", muse_settings_character(), on_character);
     lv_obj_t *hint = note(list, "Off shows a quiet, dotted orb.");
     lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
-    switch_row(list, "Reduced motion", muse_settings_reduced_motion(), on_motion);
+    switch_row(list, "Animations", !muse_settings_reduced_motion(), on_motion);
 #endif
     s_bright_sl = slider(list, "Brightness", 10, 100, muse_settings_brightness(), &s_bright_val, on_bright);
     set_val(s_bright_val, "%d%%", muse_settings_brightness());
@@ -1315,6 +1335,25 @@ static void build_power_page(lv_obj_t *tile)
 
 /* ---------- Home ---------- */
 
+static void build_info_page(lv_obj_t *tile)
+{
+    lv_obj_t *list;
+    s_info = page(tile, "About Muse", true, &list);
+    note(list, muse_board->name);
+    char text[160];
+    snprintf(text, sizeof(text), "Firmware %s\n%d x %d display",
+             esp_app_get_description()->version, muse_board->width, muse_board->height);
+    note(list, text);
+    muse_wifi_status_t wifi; muse_wifi_status(&wifi);
+    snprintf(text, sizeof(text), "Wi-Fi: %s\nIP: %s",
+             wifi.state == MUSE_WIFI_CONNECTED ? wifi.ssid : "offline",
+             wifi.state == MUSE_WIFI_CONNECTED ? wifi.ip : "not connected");
+    note(list, text);
+    snprintf(text, sizeof(text), "Hold %s to talk.\nPress %s to sleep or wake.",
+             muse_board->talk_button, muse_board->aux_button);
+    note(list, text);
+}
+
 static const page_t WIFI = { &s_wifi, build_wifi_page };
 static const page_t HATCH = { &s_hatch, build_hatch_page };
 static const page_t BLE = { &s_ble, build_ble_page };
@@ -1323,25 +1362,59 @@ static const page_t DISPLAY = { &s_display, build_display_page };
 static const page_t SLEEP = { &s_sleep, build_sleep_page };
 static const page_t BATTERY = { &s_battery, build_battery_page };
 static const page_t POWER = { &s_power, build_power_page };
+static const page_t INFO = { &s_info, build_info_page };
+
+static void select_group(int group)
+{
+    s_group = group;
+    for (int i = 0; i < 9; i++)
+        lv_obj_set_flag(s_home_rows[i], LV_OBJ_FLAG_HIDDEN, i / 3 != group);
+    for (int i = 0; i < 3; i++) {
+        lv_obj_set_style_bg_color(s_groups[i], lv_color_hex(i == group ? MUSE_ORANGE : MUSE_INK), 0);
+        lv_obj_set_style_text_color(s_group_labels[i], lv_color_hex(MUSE_CREAM), 0);
+    }
+}
+
+static void on_group(lv_event_t *e)
+{
+    select_group((int)(intptr_t)lv_event_get_user_data(e));
+    muse_state_poke();
+}
 
 static void build_home(lv_obj_t *tile)
 {
     lv_obj_t *list;
     s_home = page(tile, "Settings", false, &list);
     if (muse_board->round) {
-        /* Show complete rows at rest, inside the circular viewport. */
-        int height = lv_obj_get_style_height(list, 0);
-        lv_obj_set_height(list, ((height - 6) / (ROW_H + 10)) * (ROW_H + 10) - 10 + 6);
+        /* Three complete rows per group. No controls hide below the bezel. */
+        lv_obj_align(list, LV_ALIGN_TOP_MID, 0, 132);
+        lv_obj_set_height(list, 3 * ROW_H + 20 + 6);
+        lv_obj_set_style_pad_bottom(list, 3, 0);
+        lv_obj_remove_flag(list, LV_OBJ_FLAG_SCROLLABLE);
+        const char *const names[] = { "Daily", "Connect", "Device" };
+        int width = LV_MIN(300, muse_board->width - 132), gap = 6;
+        int tab_w = (width - 2 * gap) / 3;
+        for (int i = 0; i < 3; i++) {
+            lv_obj_t *b = lv_button_create(s_home); lv_obj_remove_style_all(b);
+            muse_surface(b, false, 18);
+            lv_obj_set_size(b, tab_w, 40);
+            lv_obj_set_pos(b, (muse_board->width - width) / 2 + i * (tab_w + gap), 82);
+            lv_obj_add_event_cb(b, on_group, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+            s_groups[i] = b;
+            s_group_labels[i] = label(b, &lv_font_montserrat_16, MUSE_CREAM, names[i]);
+            lv_obj_center(s_group_labels[i]);
+        }
     }
-    row(list, LV_SYMBOL_VOLUME_MAX, "Sound", &s_home_sound, on_nav, (void *)&SOUND);
-    row(list, LV_SYMBOL_EYE_OPEN, "Display", NULL, on_nav, (void *)&DISPLAY);
-    row(list, LV_SYMBOL_WIFI, "Wi-Fi", &s_home_wifi, on_nav, (void *)&WIFI);
-    row(list, LV_SYMBOL_HOME, "Muse", &s_home_hatch, on_nav, (void *)&HATCH);
-    row(list, LV_SYMBOL_BLUETOOTH, "Bluetooth", &s_home_ble, on_nav, (void *)&BLE);
-    row(list, LV_SYMBOL_EYE_CLOSE, "Sleep", &s_home_sleep, on_nav, (void *)&SLEEP);
-    row(list, LV_SYMBOL_BATTERY_FULL, "Battery", &s_home_battery, on_nav, (void *)&BATTERY);
-    row(list, LV_SYMBOL_POWER, "Power off", NULL, on_nav, (void *)&POWER);
-    s_about = note(list, "");
+    s_home_rows[0] = row(list, LV_SYMBOL_VOLUME_MAX, "Sound", &s_home_sound, on_nav, (void *)&SOUND);
+    s_home_rows[1] = row(list, LV_SYMBOL_EYE_OPEN, "Display", NULL, on_nav, (void *)&DISPLAY);
+    s_home_rows[2] = row(list, LV_SYMBOL_EYE_CLOSE, "Sleep", &s_home_sleep, on_nav, (void *)&SLEEP);
+    s_home_rows[3] = row(list, LV_SYMBOL_WIFI, "Wi-Fi", &s_home_wifi, on_nav, (void *)&WIFI);
+    s_home_rows[4] = row(list, LV_SYMBOL_BLUETOOTH, "Bluetooth", &s_home_ble, on_nav, (void *)&BLE);
+    s_home_rows[5] = row(list, LV_SYMBOL_HOME, "Muse", &s_home_hatch, on_nav, (void *)&HATCH);
+    s_home_rows[6] = row(list, LV_SYMBOL_BATTERY_FULL, "Battery", &s_home_battery, on_nav, (void *)&BATTERY);
+    s_home_rows[7] = row(list, LV_SYMBOL_SETTINGS, "About", NULL, on_nav, (void *)&INFO);
+    s_home_rows[8] = row(list, LV_SYMBOL_POWER, "Power off", NULL, on_nav, (void *)&POWER);
+    if (muse_board->round) select_group(0);
 }
 
 static void tick_home(void)
@@ -1354,6 +1427,10 @@ static void tick_home(void)
     muse_hatch_status_t h;
     muse_hatch_status(&h);
     set_text(s_home_hatch, muse_hatch_state_name(h.state));
+#if CONFIG_MUSE_POCKET
+    if (muse_pocket_enabled())
+        set_text(s_home_hatch, muse_pocket_connected() ? "Online" : "Offline");
+#endif
 
     muse_ble_status_t b;
     muse_ble_status(&b);
@@ -1375,9 +1452,6 @@ static void tick_home(void)
     }
     set_text(s_home_battery, buf);
 
-    snprintf(buf, sizeof(buf), "Muse %s  -  %s", esp_app_get_description()->version,
-             w.state == MUSE_WIFI_CONNECTED ? w.ip : "offline");
-    set_text(s_about, buf);
 }
 
 /* ---------- public ---------- */
@@ -1428,12 +1502,17 @@ bool muse_settings_ui_in_subpage(void)
 #if LV_USE_SNAPSHOT
 bool muse_settings_ui_preview_page(const char *name)
 {
-    const char *const names[] = { "settings", "wifi", "muse", "bluetooth", "sound", "sleep", "battery", "display" };
+    if (muse_board->round && (!strcmp(name, "settings-connect") || !strcmp(name, "settings-device"))) {
+        select_group(!strcmp(name, "settings-connect") ? 1 : 2);
+        show(s_home); muse_settings_ui_tick(true); return true;
+    }
+    const char *const names[] = { "settings", "wifi", "muse", "bluetooth", "sound", "sleep", "battery", "display", "about" };
     const page_t pages[] = {
         { &s_home, NULL }, { &s_wifi, build_wifi_page }, { &s_hatch, build_hatch_page },
         { &s_ble, build_ble_page }, { &s_sound, build_sound_page },
         { &s_sleep, build_sleep_page }, { &s_battery, build_battery_page },
         { &s_display, build_display_page },
+        { &s_info, build_info_page },
     };
     for (size_t i = 0; s_home && i < sizeof(pages) / sizeof(pages[0]); i++) {
         if (strcmp(name, names[i])) {
@@ -1448,6 +1527,16 @@ bool muse_settings_ui_preview_page(const char *name)
         muse_settings_ui_tick(true);
         return true;
     }
+    return false;
+}
+
+bool muse_settings_ui_check(const char *name)
+{
+    if (!strcmp(name, "daily")) return s_current == s_home && s_group == 0;
+    if (!strcmp(name, "connect")) return s_current == s_home && s_group == 1;
+    if (!strcmp(name, "device")) return s_current == s_home && s_group == 2;
+    if (!strcmp(name, "bluetooth")) return s_current == s_ble;
+    if (!strcmp(name, "about")) return s_current == s_info;
     return false;
 }
 #endif

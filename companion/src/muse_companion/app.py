@@ -21,7 +21,7 @@ from PIL import Image, UnidentifiedImageError
 from .assistant import Assistant, reminder_card, task_card
 from .config import Settings
 from .integrations import Integrations
-from .models import ActionIn, Card, ChatIn, MemoryIn, NotificationIn, ReminderIn
+from .models import ActionIn, Card, ChatIn, MemoryIn, NotificationIn, ReminderIn, WorkControlIn, InterpreterIn
 from .openai_api import LiveSession, OpenAI, ProviderError, wav_bytes
 from .store import Conflict, Store, new_id
 
@@ -146,11 +146,13 @@ def create_app(settings: Settings | None = None, provider=None) -> FastAPI:
         current_tasks = [task_card(task).model_dump() for task in tasks if task["state"] in ("open", "running", "queued")]
         return {"protocol": 1, "server_time": time.time(), "timezone": settings.timezone,
                 "memories": store.rows("SELECT * FROM memories ORDER BY updated DESC LIMIT 100"),
-                "reminders": reminders, "tasks": tasks, "cards": due + approvals + current_tasks,
+                "reminders": reminders, "tasks": tasks, "cards": due + approvals + current_tasks + assistant.lessons.cards(),
+                "study_cards": assistant.lessons.cards(),
                 "notifications": store.rows("SELECT * FROM notifications ORDER BY created DESC LIMIT 30"),
                 "documents": store.rows("SELECT * FROM documents ORDER BY created DESC"),
                 "integrations": integrations.catalog(), "usage": store.rows("SELECT * FROM usage ORDER BY day DESC LIMIT 10"),
                 "grep": assistant.grep.status(),
+                "interpreters": [card.model_dump() for device in store.rows("SELECT id FROM devices WHERE role='device' AND revoked=0") if (card := assistant.interpreter.card(device["id"]))],
                 "briefing_hour": store.setting("briefing_hour"), "voice_mode": "push-to-talk"}
 
     @app.get("/api/state")
@@ -214,10 +216,15 @@ def create_app(settings: Settings | None = None, provider=None) -> FastAPI:
 
     @app.put("/api/reminders/{item_id}")
     async def reschedule(item_id: str, data: ReminderIn, user=Depends(identity)):
-        if not store.execute("UPDATE reminders SET title=?,due=?,ssid=?,state='scheduled',revision=revision+1 WHERE id=?", (data.title, data.due_at.timestamp(), data.arrival_ssid, item_id)):
-            raise HTTPException(404, "Reminder not found")
-        store.event("reminders.changed", {"id": item_id})
-        return {"ok": True}
+        return store.reschedule_reminder(item_id, data.title, data.due_at.timestamp(), data.arrival_ssid)
+
+    @app.post("/api/tasks/{item_id}/control")
+    async def control_work(item_id: str, data: WorkControlIn, user=Depends(identity)):
+        return await assistant.tool("work_control", {"id": item_id, "action": data.action, "instructions": data.instructions}, "typed", user["id"] + ":" + data.operation_id)
+
+    @app.post("/api/interpreter")
+    async def start_interpreter(data: InterpreterIn, user=Depends(owner)):
+        return assistant.interpreter.start(data.device_id or user["id"], data.mine, data.theirs).model_dump()
 
     @app.post("/api/items/{item_id}/action")
     async def action(item_id: str, data: ActionIn, user=Depends(identity)):
@@ -467,10 +474,10 @@ async def device_connection(ws, settings, store, assistant, provider, voice_lock
             await send({"type": "card", "card": card})
         return result
 
-    async def recorded_turn(pcm, identity, epoch):
+    async def recorded_turn(pcm, identity, epoch, context=None):
         try:
             op = user["id"] + ":voice:" + identity
-            store.capture(op, pcm)
+            store.capture(op, pcm, context)
             # ACK means durable backend storage, independent of provider uptime.
             await send({"type": "voice.received", "id": identity})
             result = await assistant.process_capture(op)
@@ -479,30 +486,19 @@ async def device_connection(ws, settings, store, assistant, provider, voice_lock
                 await send({"type": "voice.done", "generation": epoch})
                 return
             await emit("caption", result.get("text", "Saved"), epoch)
+            if result.get("source_text"):
+                await emit("heard", result["source_text"], epoch)
             for card in result.get("cards", []):
                 await send({"type": "card", "card": card})
             if epoch == generation:
                 try:
-                    audio = await provider.speak(result.get("text", "Saved"))
+                    audio = result.get("_audio") or await provider.speak(result.get("text", "Saved"))
                     await emit("audio", audio, epoch)
                 except ProviderError:
                     await emit("error", "Speech unavailable; the text result is saved", epoch)
             await send({"type": "voice.done", "generation": epoch})
         except Exception:
             await emit("error", "Voice request failed. Check task state before retrying; your device keeps an unacknowledged note.", epoch)
-            await send({"type": "voice.done", "generation": epoch})
-
-    async def translated_turn(pcm, target_language, epoch):
-        try:
-            result = await provider.translate(pcm, target_language)
-            card = Card(id=new_id(), kind="translation", title="Translation", body=result["source"][:700] + "\n\n" + result["text"][:850], source="AI translation · " + target_language)
-            store.event("notification", card.model_dump())
-            await emit("heard", result["source"], epoch)
-            await emit("caption", result["text"], epoch)
-            await emit("audio", result["audio"], epoch)
-        except (ProviderError, ValueError):
-            await emit("error", "Translation failed. Try a shorter phrase.", epoch)
-        finally:
             await send({"type": "voice.done", "generation": epoch})
 
     async def typed_turn(text, identity, epoch):
@@ -557,8 +553,19 @@ async def device_connection(ws, settings, store, assistant, provider, voice_lock
                     task = store.one("SELECT * FROM tasks WHERE id=?", (event["payload"]["id"],))
                     if task:
                         await send({"type": "card", "card": task_card(task).model_dump()})
+                        if not assistant.lessons.card(task['id']):
+                            await send({'type':'card.remove','id':'study:'+task['id']})
+                elif event['type'] == 'study.changed':
+                    card = assistant.lessons.card(event['payload']['id'])
+                    await send({'type':'card','card':card.model_dump()} if card else {'type':'card.remove','id':'study:'+event['payload']['id']})
+                elif event["type"] == "interpreter.changed" and event["payload"]["device_id"] == user["id"]:
+                    await send(assistant.interpreter.mode(user["id"]))
+                    card = assistant.interpreter.card(user["id"])
+                    await send({"type": "card", "card": card.model_dump()} if card else {"type": "card.remove", "id": "interpret:" + user["id"]})
             if ticks % 15 == 0:
                 await send({"type": "sync", "server_epoch": time.time(), "reminders": store.rows("SELECT * FROM reminders WHERE state!='done' ORDER BY due LIMIT 8")})
+                for card in assistant.lessons.cards():
+                    await send({'type':'card','card':card})
             if live and time.monotonic() - voice_started > settings.live_max_seconds:
                 await stop_live()
                 await send({"type": "voice.done", "generation": generation})
@@ -582,9 +589,14 @@ async def device_connection(ws, settings, store, assistant, provider, voice_lock
 
     await send({"type": "hello", "protocol": 1, "device_id": user["id"], "audio_rate": 16000, "max_record_seconds": 30})
     await send({"type": "cards.reset"})
+    store.set_setting("capabilities:" + user["id"], [])
+    await send(assistant.interpreter.mode(user["id"]))
     sequence = (store.one("SELECT MAX(seq) AS seq FROM events") or {}).get("seq") or 0
     for card in snapshot()["cards"][:5]:
         await send({"type": "card", "card": card})
+    interpreter_card = assistant.interpreter.card(user["id"])
+    if interpreter_card:
+        await send({"type": "card", "card": interpreter_card.model_dump()})
     pump = asyncio.create_task(updates())
     try:
         while True:
@@ -611,6 +623,9 @@ async def device_connection(ws, settings, store, assistant, provider, voice_lock
             kind = event.get("type")
             if kind == "ping":
                 await send({"type": "pong"})
+            elif kind == "device.hello":
+                capabilities = event.get("capabilities", [])
+                store.set_setting("capabilities:" + user["id"], ["capture_modes_v1"] if isinstance(capabilities, list) and "capture_modes_v1" in capabilities else [])
             elif kind == "network":
                 ssid = str(event.get("ssid", ""))[:32]
                 store.due_reminders(time.time(), ssid)
@@ -653,7 +668,8 @@ async def device_connection(ws, settings, store, assistant, provider, voice_lock
                 if live:
                     task = asyncio.create_task(live_silence(live, generation))
                 else:
-                    task = asyncio.create_task(translated_turn(bytes(recording), language, generation) if mode == "translate" else recorded_turn(bytes(recording), operation, generation))
+                    context = {"device_id": user["id"], "mode": mode, "language": language if mode == "translate" else ""}
+                    task = asyncio.create_task(recorded_turn(bytes(recording), operation, generation, context))
                     active = False
                     voice_lock.release()
                 background.add(task)

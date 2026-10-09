@@ -45,7 +45,10 @@ if(CONFIG_MUSE_ENABLED)
     list(APPEND srcs "muse_theme.c")
     if(CONFIG_MUSE_REFINED_UI)
         list(APPEND srcs "muse_refined_ui.c" "muse_character.c" "muse_character_data.c"
-             "muse_reply.c" "muse_reading.c" "muse_presentation.c")
+             "muse_reply.c" "muse_reading.c" "muse_presentation.c" "muse_markdown.c"
+             "vendor/md4c/md4c.c" "vendor/md4c/entity.c"
+             "fonts/muse_font_bold_20.c" "fonts/muse_font_italic_20.c"
+             "fonts/muse_font_bold_italic_20.c")
     endif()
     if(CONFIG_MUSE_HATCH)
         list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp" "muse_tts.cpp")
